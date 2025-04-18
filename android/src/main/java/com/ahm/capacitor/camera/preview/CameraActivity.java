@@ -37,6 +37,7 @@ import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.RelativeLayout;
 import androidx.exifinterface.media.ExifInterface;
+import com.getcapacitor.JSObject;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -46,12 +47,13 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
+
 public class CameraActivity extends Fragment {
 
     public interface CameraPreviewListener {
         void onPictureTaken(String originalPicture);
         void onPictureTakenError(String message);
-        void onSnapshotTaken(String originalPicture);
+        void onSnapshotTaken(JSObject frameData);
         void onSnapshotTakenError(String message);
         void onFocusSet(int pointX, int pointY);
         void onFocusSetError(String message);
@@ -747,37 +749,52 @@ public class CameraActivity extends Fragment {
 
     public void takeSnapshot(final int quality) {
         mCamera.setPreviewCallback(
-            new Camera.PreviewCallback() {
-                @Override
-                public void onPreviewFrame(byte[] bytes, Camera camera) {
-                    try {
-                        Camera.Parameters parameters = camera.getParameters();
-                        Camera.Size size = parameters.getPreviewSize();
-                        int orientation = mPreview.getDisplayOrientation();
-                        if (mPreview.getCameraFacing() == Camera.CameraInfo.CAMERA_FACING_FRONT) {
-                            bytes = rotateNV21(bytes, size.width, size.height, (360 - orientation) % 360);
-                        } else {
-                            bytes = rotateNV21(bytes, size.width, size.height, orientation);
-                        }
-                        // switch width/height when rotating 90/270 deg
-                        Rect rect = orientation == 90 || orientation == 270
-                            ? new Rect(0, 0, size.height, size.width)
-                            : new Rect(0, 0, size.width, size.height);
-                        YuvImage yuvImage = new YuvImage(bytes, parameters.getPreviewFormat(), rect.width(), rect.height(), null);
-                        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-                        yuvImage.compressToJpeg(rect, quality, byteArrayOutputStream);
-                        byte[] data = byteArrayOutputStream.toByteArray();
-                        byteArrayOutputStream.close();
-                        eventListener.onSnapshotTaken(Base64.encodeToString(data, Base64.NO_WRAP));
-                    } catch (IOException e) {
-                        Log.d(TAG, "CameraPreview IOException");
-                        eventListener.onSnapshotTakenError("IO Error");
-                    } finally {
-                        mCamera.setPreviewCallback(null);
-                    }
-                }
-            }
-        );
+	        new Camera.PreviewCallback() {
+	            @Override
+	            public void onPreviewFrame(byte[] bytes, Camera camera) {
+	                try {
+	                    Camera.Parameters parameters = camera.getParameters();
+	                    Camera.Size size = parameters.getPreviewSize();
+	                    int orientation = mPreview.getDisplayOrientation();
+						Log.d(TAG, "CameraPreview takeSnapshot orientation: " + orientation);
+						Log.d(TAG, "GetCameraFacing: " + mPreview.getCameraFacing());
+	                    if (mPreview.getCameraFacing() == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+	                        bytes = rotateNV21(bytes, size.width, size.height, (360 - orientation) % 360);
+	                    } else {
+	                        bytes = rotateNV21(bytes, size.width, size.height, orientation);
+	                    }
+	                    //No need to create YuvImage or compress to JPEG
+						Rect rect = orientation == 90 || orientation == 270
+	                            ? new Rect(0, 0, size.height, size.width)
+	                            : new Rect(0, 0, size.width, size.height);
+
+						Log.d(TAG, "getPreviewSize: " + size.width + "x" + size.height);
+	                    YuvImage yuvImage = new YuvImage(bytes, parameters.getPreviewFormat(), rect.width(), rect.height(), null);
+	                    ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+	                    yuvImage.compressToJpeg(rect, quality, byteArrayOutputStream);
+	                    byte[] data = byteArrayOutputStream.toByteArray();
+	                    byteArrayOutputStream.close();
+
+	                    JSObject frameData = new JSObject();
+						String base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP);
+
+						Log.d(TAG, "Bytes are: " + bytes.length);
+	                    frameData.put("data", base64Data); 
+	                    frameData.put("width", size.width);
+	                    frameData.put("height", size.height);
+						frameData.put("orientation", orientation);
+						frameData.put("base64", Base64.encodeToString(data, Base64.NO_WRAP));
+	                    eventListener.onSnapshotTaken(frameData);
+
+	                } catch (Exception e) {
+	                    Log.e(TAG, "Error processing raw frame: ", e);
+	                    eventListener.onSnapshotTakenError("Error processing frame");
+	                } finally {
+	                    mCamera.setPreviewCallback(null);
+	                }
+	            }
+	        }
+	    );
     }
 
     public void takePicture(final int width, final int height, final int quality) {
