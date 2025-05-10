@@ -107,6 +107,19 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         Integer quality = call.getInt("quality", 85);
         fragment.takeSnapshot(quality);
     }
+	
+    @PluginMethod
+    public void readCapture(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+        bridge.saveCall(call);
+        snapshotCallbackId = call.getCallbackId();
+
+        Integer quality = call.getInt("quality", 85);
+        fragment.readSnapshot(quality);
+    }
 
     @PluginMethod
     public void stop(final PluginCall call) {

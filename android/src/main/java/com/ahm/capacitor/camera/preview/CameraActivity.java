@@ -23,6 +23,7 @@ import android.os.Bundle;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.SparseIntArray;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -37,6 +38,7 @@ import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.RelativeLayout;
 import androidx.exifinterface.media.ExifInterface;
+import androidx.annotation.NonNull;
 import com.getcapacitor.JSObject;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -46,6 +48,15 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 
 public class CameraActivity extends Fragment {
@@ -107,6 +118,9 @@ public class CameraActivity extends Fragment {
     public int height;
     public int x;
     public int y;
+
+	// OCR Properties
+	private TextRecognizer textRecognizer;
 
     public void setEventListener(CameraPreviewListener listener) {
         eventListener = listener;
@@ -785,6 +799,76 @@ public class CameraActivity extends Fragment {
 						frameData.put("orientation", orientation);
 						frameData.put("base64", Base64.encodeToString(data, Base64.NO_WRAP));
 	                    eventListener.onSnapshotTaken(frameData);
+
+	                } catch (Exception e) {
+	                    Log.e(TAG, "Error processing raw frame: ", e);
+	                    eventListener.onSnapshotTakenError("Error processing frame");
+	                } finally {
+	                    mCamera.setPreviewCallback(null);
+	                }
+	            }
+	        }
+	    );
+    }
+
+    public void readSnapshot(final int quality) {
+        mCamera.setPreviewCallback(
+	        new Camera.PreviewCallback() {
+	            @Override
+	            public void onPreviewFrame(byte[] bytes, Camera camera) {
+	                try {
+	                    Camera.Parameters parameters = camera.getParameters();
+	                    Camera.Size size = parameters.getPreviewSize();
+	                    int orientation = mPreview.getDisplayOrientation();
+						Log.d(TAG, "CameraPreview takeSnapshot orientation: " + orientation);
+						Log.d(TAG, "GetCameraFacing: " + mPreview.getCameraFacing());
+	                    // Correctly handle front camera rotation
+                        if (mPreview.getCameraFacing() == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+                            orientation = (360 - orientation) % 360;
+                        }
+
+                        // Create InputImage from byte array
+                        InputImage image = InputImage.fromByteArray(
+                                bytes,
+                                size.width,
+                                size.height,
+                                orientation,
+                                InputImage.IMAGE_FORMAT_NV21 // Assuming NV21 format.  This is crucial.
+                        );
+
+                        if (textRecognizer == null) {
+                            textRecognizer = TextRecognition.getClient(new TextRecognizerOptions.Builder().build());
+                        }
+
+
+		                textRecognizer.process(image)
+		                        .addOnSuccessListener(new OnSuccessListener<Text>() {
+		                            @Override
+		                            public void onSuccess(Text visionText) {
+		                                JSObject ret = new JSObject();
+		                                String resultText = visionText.getText();
+		                                ret.put("text", resultText);
+
+		                                JSObject blocks = new JSObject();
+		                                int blockIndex = 0;
+		                                for (Text.TextBlock block : visionText.getTextBlocks()) {
+		                                    JSObject blockData = new JSObject();
+		                                    blockData.put("text", block.getText());
+		                                    blocks.put("block" + blockIndex, blockData);
+		                                    blockIndex++;
+		                                }
+		                                ret.put("blocks", blocks);
+
+		                                eventListener.onSnapshotTaken(ret);
+		                            }
+		                        })
+		                        .addOnFailureListener(
+		                                new OnFailureListener() {
+		                                    @Override
+		                                    public void onFailure(@NonNull Exception e) {
+		                                        eventListener.onSnapshotTakenError("Error processing frame");
+		                                    }
+		                                });
 
 	                } catch (Exception e) {
 	                    Log.e(TAG, "Error processing raw frame: ", e);
