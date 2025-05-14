@@ -761,6 +761,7 @@ public class CameraActivity extends Fragment {
         mPreview.setOpacity(opacity);
     }
 
+	/* Required */
     public void takeSnapshot(final int quality) {
         mCamera.setPreviewCallback(
 	        new Camera.PreviewCallback() {
@@ -811,6 +812,7 @@ public class CameraActivity extends Fragment {
 	    );
     }
 
+	/* Required */
     public void readSnapshot(final int quality) {
         mCamera.setPreviewCallback(
 	        new Camera.PreviewCallback() {
@@ -881,6 +883,7 @@ public class CameraActivity extends Fragment {
 	    );
     }
 
+	/* Required */
     public void takePicture(final int width, final int height, final int quality) {
         Log.d(TAG, "CameraPreview takePicture width: " + width + ", height: " + height + ", quality: " + quality);
 

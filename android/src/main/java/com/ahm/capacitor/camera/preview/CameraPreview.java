@@ -79,6 +79,7 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         fragment.setOpacity(opacity);
     }
 
+	/* Required */
     @PluginMethod
     public void capture(PluginCall call) {
         if (this.hasCamera(call) == false) {
@@ -95,6 +96,7 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         fragment.takePicture(width, height, quality);
     }
 
+	/* Required */
     @PluginMethod
     public void captureSample(PluginCall call) {
         if (this.hasCamera(call) == false) {
@@ -108,6 +110,7 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         fragment.takeSnapshot(quality);
     }
 	
+	/* Required */
     @PluginMethod
     public void readCapture(PluginCall call) {
         if (this.hasCamera(call) == false) {
