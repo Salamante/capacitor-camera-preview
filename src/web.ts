@@ -152,6 +152,9 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
   async captureSample(_options: CameraSampleOptions): Promise<any> {
     return this.capture(_options);
   }
+  async readCapture(_options: CameraSampleOptions): Promise<any> {
+	throw this.unimplemented('Not implemented on web.');
+  }
 
   async getSupportedFlashModes(): Promise<{
     result: CameraPreviewFlashMode[];
