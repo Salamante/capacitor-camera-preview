@@ -11,6 +11,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
+import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
@@ -40,6 +41,7 @@ import android.widget.RelativeLayout;
 import androidx.exifinterface.media.ExifInterface;
 import androidx.annotation.NonNull;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -57,6 +59,12 @@ import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+import com.google.mlkit.vision.face.Face;
+import com.google.mlkit.vision.face.FaceContour;
+import com.google.mlkit.vision.face.FaceDetection;
+import com.google.mlkit.vision.face.FaceDetector;
+import com.google.mlkit.vision.face.FaceDetectorOptions;
+import com.google.mlkit.vision.face.FaceLandmark;
 
 
 public class CameraActivity extends Fragment {
@@ -74,6 +82,8 @@ public class CameraActivity extends Fragment {
         void onStartRecordVideoError(String message);
         void onStopRecordVideo(String file);
         void onStopRecordVideoError(String error);
+		void onFaceDetected(JSObject faceData);
+		void onFaceDetectionError(String error);
     }
 
     private CameraPreviewListener eventListener;
@@ -121,6 +131,8 @@ public class CameraActivity extends Fragment {
 
 	// OCR Properties
 	private TextRecognizer textRecognizer;
+	// Face Detection Properties
+	private FaceDetector faceDetector;
 
     public void setEventListener(CameraPreviewListener listener) {
         eventListener = listener;
@@ -882,6 +894,198 @@ public class CameraActivity extends Fragment {
 	        }
 	    );
     }
+
+	/* Face Detection::start */
+	public void detectFace() {
+		try {
+			Log.d(TAG, "CameraPreview detectFace called");
+            FaceDetectorOptions options = new FaceDetectorOptions.Builder()
+                    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                    .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                    .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                    .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
+                    .build();
+
+            this.faceDetector = FaceDetection.getClient(options);
+        } catch (Exception e) {
+            Log.e(TAG, "Error initializing face detector: ", e);
+			eventListener.onFaceDetectionError("Error initializing face detector");
+			return;
+        }
+
+		mCamera.setPreviewCallback(
+			new Camera.PreviewCallback() {
+				@Override
+	            public void onPreviewFrame(byte[] bytes, Camera camera) {
+					try {
+						Camera.Parameters parameters = camera.getParameters();
+			                    Camera.Size size = parameters.getPreviewSize();
+			                    int orientation = mPreview.getDisplayOrientation();
+								Log.d(TAG, "CameraPreview takeSnapshot orientation: " + orientation);
+								Log.d(TAG, "GetCameraFacing: " + mPreview.getCameraFacing());
+			                    // Correctly handle front camera rotation
+		                        if (mPreview.getCameraFacing() == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+		                            orientation = (360 - orientation) % 360;
+		                        }
+
+		                        // Create InputImage from byte array
+		                        InputImage image = InputImage.fromByteArray(
+		                                bytes,
+		                                size.width,
+		                                size.height,
+		                                orientation,
+		                                InputImage.IMAGE_FORMAT_NV21 // Assuming NV21 format.  This is crucial.
+		                        );
+
+						if (faceDetector == null) {
+							Log.e(TAG, "Face detector is not initialized");
+							eventListener.onFaceDetectionError("Face detector not initialized");
+							return;
+						}
+
+						faceDetector.process(image)
+								.addOnSuccessListener(new OnSuccessListener<List<Face>>() {
+									@Override
+									public void onSuccess(List<Face> faces) {
+										Log.d(TAG, "Face detection successful, number of faces detected: " + faces.size());
+										JSObject result = processFaces(faces, size.width, size.height);
+										eventListener.onFaceDetected(result);
+									}
+								})
+								.addOnFailureListener(new OnFailureListener() {
+									@Override
+									public void onFailure(@NonNull Exception e) {
+										Log.e(TAG, "Error processing image: ", e);
+										eventListener.onFaceDetectionError("Error processing image");
+									}
+								});
+					} catch (Exception e) {
+						Log.e(TAG, "Error processing raw frame: ", e);
+						eventListener.onFaceDetectionError("Error processing frame");
+						return;
+					} finally {
+	                    mCamera.setPreviewCallback(null);
+	                }
+				}
+			}
+		);
+	}
+
+	private JSObject processFaces(List<Face> faces, int imageWidth, int imageHeight) {
+        JSObject result = new JSObject();
+        JSArray facesArray = new JSArray();
+		result.put("imageWidth", imageWidth);
+		result.put("imageHeight", imageHeight);
+
+        for (Face face : faces) {
+            JSObject faceObj = new JSObject();
+
+            Rect bounds = face.getBoundingBox();
+            JSObject boundsObj = new JSObject();
+            boundsObj.put("left", bounds.left);
+            boundsObj.put("top", bounds.top);
+            boundsObj.put("right", bounds.right);
+            boundsObj.put("bottom", bounds.bottom);
+            faceObj.put("bounds", boundsObj);
+
+            faceObj.put("headEulerAngleY", face.getHeadEulerAngleY());
+            faceObj.put("headEulerAngleZ", face.getHeadEulerAngleZ());
+			faceObj.put("headEulerAngleX", face.getHeadEulerAngleX());
+
+            JSObject landmarksObj = new JSObject();
+            for (FaceLandmark landmark : face.getAllLandmarks()) {
+                PointF position = landmark.getPosition();
+                JSObject landmarkObj = new JSObject();
+                landmarkObj.put("x", position.x);
+                landmarkObj.put("y", position.y);
+                landmarksObj.put(getLandmarkName(landmark.getLandmarkType()), landmarkObj);
+            }
+            faceObj.put("landmarks", landmarksObj);
+
+            JSObject contoursObj = new JSObject();
+            for (FaceContour contour : face.getAllContours()) {
+                JSArray pointsArray = new JSArray();
+                for (PointF point : contour.getPoints()) {
+                    JSObject pointObj = new JSObject();
+                    pointObj.put("x", point.x);
+                    pointObj.put("y", point.y);
+                    pointsArray.put(pointObj);
+
+                }
+                JSObject contourObj = new JSObject();
+                contourObj.put("points", pointsArray);
+                contoursObj.put(getContourTypeName(contour.getFaceContourType()), contourObj);
+            }
+            faceObj.put("contours", contoursObj);
+
+            if (face.getSmilingProbability() != null) {
+                faceObj.put("smilingProbability", face.getSmilingProbability());
+            }
+            if (face.getLeftEyeOpenProbability() != null) {
+                faceObj.put("leftEyeOpenProbability", face.getLeftEyeOpenProbability());
+            }
+            if (face.getRightEyeOpenProbability() != null) {
+                faceObj.put("rightEyeOpenProbability", face.getRightEyeOpenProbability());
+            }
+            if (face.getTrackingId() != null) {
+                faceObj.put("trackingId", face.getTrackingId());
+            }
+
+            facesArray.put(faceObj);
+        }
+
+        result.put("faces", facesArray);
+        return result;
+    }
+
+		private String getLandmarkName(int landmarkType) {
+			if (landmarkType == 1) return "MOUTH_BOTTOM";
+			else if (landmarkType == 2) return "LEFT_EYE";
+			else if (landmarkType == 3) return "RIGHT_EYE";
+			else if (landmarkType == 4) return "LEFT_EAR";
+			else if (landmarkType == 5) return "RIGHT_EAR";
+			else if (landmarkType == 6) return "NOSE_BASE";
+			else if (landmarkType == 7) return "LEFT_CHEEK";
+			else if (landmarkType == 8) return "RIGHT_CHEEK";
+			else if (landmarkType == 10) return "MOUTH_CENTER";
+			else if (landmarkType == 43) return "LEFT_MOUTH";
+			else if (landmarkType == 44) return "RIGHT_MOUTH";
+			else if (landmarkType == 45) return "NOSE_TIP";
+			else if (landmarkType == 200) return "LEFT_EYEBROW_UPPER_MIDPOINT";
+			else if (landmarkType == 220) return "LEFT_EYEBROW_LOWER_MIDPOINT";
+			else if (landmarkType == 221) return "RIGHT_EYEBROW_UPPER_MIDPOINT";
+			else if (landmarkType == 222) return "RIGHT_EYEBROW_LOWER_MIDPOINT";
+			else if (landmarkType == 223) return "LEFT_EYE_UPPER_MIDPOINT";
+			else if (landmarkType == 224) return "LEFT_EYE_LOWER_MIDPOINT";
+			else if (landmarkType == 225) return "RIGHT_EYE_UPPER_MIDPOINT";
+			else if (landmarkType == 226) return "RIGHT_EYE_LOWER_MIDPOINT";
+			else if (landmarkType == 227) return "NOSE_BRIDGE";
+			else if (landmarkType == 300) return "LEFT_EAR_TRAGION";
+			else if (landmarkType == 302) return "RIGHT_EAR_TRAGION";
+			else if (landmarkType == 312) return "FOREHEAD_LEFT_CONTOUR";
+			else if (landmarkType == 314) return "FOREHEAD_RIGHT_CONTOUR";
+			else if (landmarkType == 315) return "CHIN_LEFT_CONTOUR";
+			else if (landmarkType == 316) return "CHIN_RIGHT_CONTOUR";
+			else return "OTHER_LANDMARK_" + landmarkType;
+		}
+
+	private String getContourTypeName(int contourType) {
+		if (contourType == 1) return "FACE";
+		else if (contourType == 2) return "LEFT_EYEBROW_TOP";
+		else if (contourType == 3) return "LEFT_EYEBROW_BOTTOM";
+		else if (contourType == 4) return "RIGHT_EYEBROW_TOP";
+		else if (contourType == 5) return "RIGHT_EYEBROW_BOTTOM";
+		else if (contourType == 6) return "LEFT_EYE";
+		else if (contourType == 7) return "RIGHT_EYE";
+		else if (contourType == 8) return "UPPER_LIP_TOP";
+		else if (contourType == 9) return "UPPER_LIP_BOTTOM";
+		else if (contourType == 10) return "LOWER_LIP_TOP";
+		else if (contourType == 11) return "LOWER_LIP_BOTTOM";
+		else if (contourType == 12) return "NOSE_BRIDGE";
+		else if (contourType == 13) return "NOSE_BOTTOM";
+		else return "UNKNOWN_CONTOUR_" + contourType;
+	}
+	/* Face Detection::end */
 
 	/* Required */
     public void takePicture(final int width, final int height, final int quality) {

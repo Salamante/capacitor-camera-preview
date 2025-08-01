@@ -10,6 +10,7 @@ import android.graphics.Point;
 import android.hardware.Camera;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
+import android.util.Log;
 import android.view.Display;
 import android.view.MotionEvent;
 import android.view.View;
@@ -40,6 +41,7 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
     private String snapshotCallbackId = "";
     private String recordCallbackId = "";
     private String cameraStartCallbackId = "";
+	private String detectFaceCallbackId = "";
 
     // keep track of previously specified orientation to support locking orientation:
     private int previousOrientationRequest = -1;
@@ -123,6 +125,20 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         Integer quality = call.getInt("quality", 85);
         fragment.readSnapshot(quality);
     }
+
+	/* Face Detection::start */
+	@PluginMethod
+	public void detectFace(PluginCall call) {
+		if (this.hasCamera(call) == false) {
+			call.reject("Camera is not running");
+			return;
+		}
+		bridge.saveCall(call);
+		detectFaceCallbackId = call.getCallbackId();
+		Log.d("CameraPreview", "Face detection started: " + detectFaceCallbackId);
+		fragment.detectFace();
+	}
+	/* Face Detection::end */
 
     @PluginMethod
     public void stop(final PluginCall call) {
@@ -427,6 +443,14 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
     public void onSnapshotTakenError(String message) {
         bridge.getSavedCall(snapshotCallbackId).reject(message);
     }
+	@Override
+	public void onFaceDetected(JSObject faceData) {
+		bridge.getSavedCall(detectFaceCallbackId).resolve(faceData);
+	}
+	@Override
+	public void onFaceDetectionError(String message) {
+		bridge.getSavedCall(detectFaceCallbackId).reject(message);
+	}
 
     @Override
     public void onFocusSet(int pointX, int pointY) {}

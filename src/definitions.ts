@@ -66,6 +66,7 @@ export interface CameraPreviewPlugin {
   capture(options: CameraPreviewPictureOptions): Promise<{ value: string }>;
   captureSample(options: CameraSampleOptions): Promise<{ base64: string, data: string, width: number, height: number, orientation: number, exif: string }>;
   readCapture(options: CameraSampleOptions): Promise<Record<string, any>>;
+  detectFace(): Promise<void>;
   getSupportedFlashModes(): Promise<{
     result: CameraPreviewFlashMode[];
   }>;
