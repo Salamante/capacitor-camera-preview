@@ -1,6 +1,6 @@
 {
-  "name": "@salamante/capacitor-camera-preview",
-  "version": "7.0.5",
+  "name": "@capacitor/capacitor-camera-preview",
+  "version": "7.0.6",
   "description": "Camera preview forked from capacitor-community/camera-preview",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -84,5 +84,8 @@
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
+  },
+  "dependencies": {
+    "@salamante/capacitor-camera-preview": "github:Salamante/capacitor-camera-preview"
   }
 }
