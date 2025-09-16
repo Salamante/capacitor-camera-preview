@@ -14,4 +14,5 @@ CAP_PLUGIN(CameraPreview, "CameraPreview",
            CAP_PLUGIN_METHOD(startRecordVideo, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(stopRecordVideo, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(isCameraStarted, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(readCapture, CAPPluginReturnPromise);
 )

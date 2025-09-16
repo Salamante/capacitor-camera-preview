@@ -100,6 +100,10 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     throw this.unimplemented('Not implemented on web.');
   }
 
+  async detectFace(): Promise<void> {
+    throw this.unimplemented('Not implemented on web.');
+  }
+
   async stop(): Promise<any> {
     const video = document.getElementById('video') as HTMLVideoElement;
     if (video) {
@@ -153,7 +157,7 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     return this.capture(_options);
   }
   async readCapture(_options: CameraSampleOptions): Promise<any> {
-	throw this.unimplemented('Not implemented on web.');
+    throw this.unimplemented('Not implemented on web.');
   }
 
   async getSupportedFlashModes(): Promise<{
