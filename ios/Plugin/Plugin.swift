@@ -1,8 +1,6 @@
 import Foundation
 import Capacitor
 import AVFoundation
-import MLKitTextRecognition
-import MLKitVision
 /**
  * Please read the Capacitor iOS Plugin Development Guide
  * here: https://capacitor.ionicframework.com/docs/plugins/ios
@@ -27,8 +25,6 @@ public class CameraPreview: CAPPlugin {
     var highResolutionOutput: Bool = false
     var disableAudio: Bool = false
 
-	// Lazy-loaded TextRecognizer instance
-    private lazy var textRecognizer = TextRecognizer.textRecognizer(options: TextRecognizerOptions())
 
     @objc func rotated() {
         let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
@@ -224,74 +220,6 @@ public class CameraPreview: CAPPlugin {
             }
         }
     }
-
-
-	@objc func readCapture(_ call: CAPPluginCall) {
-        // You can optionally pass a quality parameter from JS, but ML Kit works best
-        // with uncompressed images, so we won't use it for the processing itself.
-        // let quality: Int? = call.getInt("quality", 100)
-        
-        DispatchQueue.main.async {
-            // Call the existing captureImage method from CameraController.
-            // This method handles the capture and gives us a UIImage.
-            self.cameraController.captureImage { [weak self] (image, error) in
-                guard let self = self else {
-                    call.reject("Plugin instance is nil.")
-                    return
-                }
-
-                // Handle errors from the image capture.
-                guard let image = image else {
-                    print(error?.localizedDescription ?? "Image capture error")
-                    guard let error = error else {
-                        call.reject("Image capture error")
-                        return
-                    }
-                    call.reject(error.localizedDescription)
-                    return
-                }
-
-                // Correctly flip the image for the front camera
-                let processedImage: UIImage
-                if self.cameraController.currentCameraPosition == .front {
-                    processedImage = image.withHorizontallyFlippedOrientation()
-                } else {
-                    processedImage = image
-                }
-                
-                // Prepare the image for ML Kit
-                // We don't compress the image to retain maximum quality for OCR.
-                let visionImage = VisionImage(image: processedImage)
-
-                // Process the image with the text recognizer
-                self.textRecognizer.process(visionImage) { (result, error) in
-                    // Make sure we are on the main thread to resolve the call
-                    DispatchQueue.main.async {
-                        // Handle errors from the OCR process.
-                        guard error == nil, let result = result else {
-                            call.reject("Error processing image for OCR: \(error?.localizedDescription ?? "unknown error")")
-                            return
-                        }
-                        
-                        // Format the result to match the Android output
-                        var jsResult = JSObject()
-                        jsResult["text"] = result.text
-                        
-                        var blocksArray = [JSObject]()
-                        for block in result.blocks {
-                            var blockData = JSObject()
-                            blockData["text"] = block.text
-                            blocksArray.append(blockData)
-                        }
-                        jsResult["blocks"] = blocksArray
-
-                        call.resolve(jsResult)
-                    }
-                }
-            }
-        }
-    }
-
 
     @objc func getSupportedFlashModes(_ call: CAPPluginCall) {
         do {

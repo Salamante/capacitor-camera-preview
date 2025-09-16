@@ -13,6 +13,4 @@ end
 
 target 'PluginTests' do
   capacitor_pods
-  # ML Kit Pods
-  pod 'GoogleMLKit/TextRecognition', '8.0.0'
 end
