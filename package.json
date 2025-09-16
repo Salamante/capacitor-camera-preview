@@ -1,6 +1,6 @@
 {
   "name": "@salamante/capacitor-camera-preview",
-  "version": "7.0.3",
+  "version": "7.0.4",
   "description": "Camera preview forked from capacitor-community/camera-preview",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
