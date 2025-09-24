@@ -8,7 +8,12 @@
 
 import AVFoundation
 import UIKit
+import Vision
+import ImageIO
 
+protocol CameraTextRecognitionDelegate: AnyObject {
+    func didRecognizeText(text: String)
+}
 class CameraController: NSObject {
     var captureSession: AVCaptureSession?
 
@@ -36,6 +41,11 @@ class CameraController: NSObject {
     var audioInput: AVCaptureDeviceInput?
 
     var zoomFactor: CGFloat = 1.0
+    
+    private var requests = [VNRequest]()
+    private var isRunningTextRecognition = false
+	private var frameCounter = 0
+    public var textRecognitionDelegate: CameraTextRecognitionDelegate?
 }
 
 extension CameraController {
@@ -153,6 +163,7 @@ extension CameraController {
         }
     }
 
+
     func displayPreview(on view: UIView) throws {
         guard let captureSession = self.captureSession, captureSession.isRunning else { throw CameraControllerError.captureSessionIsMissing }
 
@@ -163,6 +174,35 @@ extension CameraController {
         self.previewLayer?.frame = view.frame
 
         updateVideoOrientation()
+    }
+    
+    func setupVision() throws {
+        let recognizeTextRequest = VNRecognizeTextRequest { (request, error) in
+            guard let observations = request.results as? [VNRecognizedTextObservation] else {
+				print("No observations")
+                return
+            }
+
+            var recognizedText = ""
+            for observation in observations {
+                guard let topCandidate = observation.topCandidates(1).first else { continue }
+                recognizedText += topCandidate.string + " "
+				// print("Recognized text so far: \(recognizedText)")
+            }
+            
+            // Pass the recognized text to the delegate on the main thread
+            DispatchQueue.main.async {
+                self.textRecognitionDelegate?.didRecognizeText(text: recognizedText.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+
+        recognizeTextRequest.recognitionLevel = .accurate
+		recognizeTextRequest.usesLanguageCorrection = false
+
+        self.requests = [recognizeTextRequest]
+
+		print("Vision setup complete")
+		self.isRunningTextRecognition = true
     }
 
     func setupGestures(target: UIView, enableZoom: Bool) {
@@ -278,6 +318,7 @@ extension CameraController {
 
         self.sampleBufferCaptureCompletionBlock = completion
     }
+
 
     func getSupportedFlashModes() throws -> [String] {
         var currentCamera: AVCaptureDevice?
@@ -481,6 +522,23 @@ extension CameraController: UIGestureRecognizerDelegate {
         default: break
         }
     }
+
+	private func visionOrientation(for videoOrientation: AVCaptureVideoOrientation,
+                               isFrontCamera: Bool) -> CGImagePropertyOrientation {
+	    switch videoOrientation {
+	    case .portrait:
+	        return isFrontCamera ? .leftMirrored : .right
+	    case .portraitUpsideDown:
+	        return isFrontCamera ? .rightMirrored : .left
+	    case .landscapeRight:
+	        return isFrontCamera ? .downMirrored : .up
+	    case .landscapeLeft:
+	        return isFrontCamera ? .upMirrored : .down
+	    @unknown default:
+	        return .up
+	    }
+	}
+	
 }
 
 extension CameraController: AVCapturePhotoCaptureDelegate {
@@ -496,44 +554,72 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 }
 
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let completion = sampleBufferCaptureCompletionBlock else { return }
+   func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        
+        // ---- Snapshot Flow ----
+        if let completion = sampleBufferCaptureCompletionBlock {
+            guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                completion(nil, CameraControllerError.unknown)
+                sampleBufferCaptureCompletionBlock = nil
+                return
+            }
 
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            completion(nil, CameraControllerError.unknown)
+            CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+
+            let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer)
+            let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+            let width = CVPixelBufferGetWidth(imageBuffer)
+            let height = CVPixelBufferGetHeight(imageBuffer)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo: UInt32 = CGBitmapInfo.byteOrder32Little.rawValue |
+                                     CGImageAlphaInfo.premultipliedFirst.rawValue
+
+            let context = CGContext(
+                data: baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            )
+
+            print("Snapshot taken, image height: \(height), width: \(width)")
+
+            guard let cgImage = context?.makeImage() else {
+                completion(nil, CameraControllerError.unknown)
+                sampleBufferCaptureCompletionBlock = nil
+                return
+            }
+
+            let image = UIImage(cgImage: cgImage)
+            completion(image.fixedOrientation(), nil)
+            sampleBufferCaptureCompletionBlock = nil
             return
         }
+        
+        // ---- Vision OCR Flow ----
+        if self.isRunningTextRecognition {
+			frameCounter += 1
+        	if frameCounter % 10 != 0 { return } // process every 10th frame
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
-
-        let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
-        let width = CVPixelBufferGetWidth(imageBuffer)
-        let height = CVPixelBufferGetHeight(imageBuffer)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo: UInt32 = CGBitmapInfo.byteOrder32Little.rawValue |
-            CGImageAlphaInfo.premultipliedFirst.rawValue
-
-        let context = CGContext(
-            data: baseAddress,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        )
-
-        guard let cgImage = context?.makeImage() else {
-            completion(nil, CameraControllerError.unknown)
-            return
+            let orientation = visionOrientation(for: connection.videoOrientation, isFrontCamera: false)
+            let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
+                                                            orientation: .up,
+                                                            options: [:])
+            
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try imageRequestHandler.perform(self.requests)
+                } catch {
+                    print("Vision error:", error)
+                }
+            }
         }
-
-        let image = UIImage(cgImage: cgImage)
-        completion(image.fixedOrientation(), nil)
-
-        sampleBufferCaptureCompletionBlock = nil
     }
 }
 

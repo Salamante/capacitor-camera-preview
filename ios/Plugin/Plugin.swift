@@ -6,7 +6,7 @@ import AVFoundation
  * here: https://capacitor.ionicframework.com/docs/plugins/ios
  */
 @objc(CameraPreview)
-public class CameraPreview: CAPPlugin {
+public class CameraPreview: CAPPlugin{
 
     var previewView: UIView!
     var cameraPosition = String()
@@ -24,6 +24,8 @@ public class CameraPreview: CAPPlugin {
     var enableZoom: Bool?
     var highResolutionOutput: Bool = false
     var disableAudio: Bool = false
+
+    var currentReadCaptureCall: CAPPluginCall?
 
 
     @objc func rotated() {
@@ -45,6 +47,7 @@ public class CameraPreview: CAPPlugin {
     }
 
     @objc func start(_ call: CAPPluginCall) {
+		cameraController.textRecognitionDelegate = self
         self.cameraPosition = call.getString("position") ?? "rear"
         self.highResolutionOutput = call.getBool("enableHighResolution") ?? false
         self.cameraController.highResolutionOutput = self.highResolutionOutput
@@ -81,9 +84,9 @@ public class CameraPreview: CAPPlugin {
                 if self.cameraController.captureSession?.isRunning ?? false {
                     call.reject("camera already started")
                 } else {
-                    self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) {error in
+                    self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) { error in
                         if let error = error {
-                            print(error)
+                            print("Error at 88: \(error)")
                             call.reject(error.localizedDescription)
                             return
                         }
@@ -105,14 +108,13 @@ public class CameraPreview: CAPPlugin {
                             NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
                         }
 
-                        call.resolve()
-
+						call.resolve()
                     }
                 }
             }
         })
-
     }
+
 
     @objc func flip(_ call: CAPPluginCall) {
         do {
@@ -220,6 +222,16 @@ public class CameraPreview: CAPPlugin {
             }
         }
     }
+    
+    @objc func readCapture(_ call: CAPPluginCall) {
+        do {
+            try self.cameraController.setupVision()
+			print("readCapture Method Called")
+			call.resolve()
+        } catch {
+            call.reject("readCapture error")
+        }
+    }
 
     @objc func getSupportedFlashModes(_ call: CAPPluginCall) {
         do {
@@ -301,4 +313,11 @@ public class CameraPreview: CAPPlugin {
         }
     }
 
+}
+extension CameraPreview: CameraTextRecognitionDelegate {
+    func didRecognizeText(text: String) {
+        print("Text detected: \(text)")
+        // Send the recognized text to the JavaScript side
+        self.notifyListeners("textRecognized", data: ["value": text])
+    }
 }
