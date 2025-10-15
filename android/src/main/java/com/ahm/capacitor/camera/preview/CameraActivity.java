@@ -841,6 +841,17 @@ public class CameraActivity extends Fragment {
                             orientation = (360 - orientation) % 360;
                         }
 
+						int processedWidth;
+						int processedHeight;
+						if (orientation == 90 || orientation == 270) {
+							processedWidth = size.height;
+							processedHeight = size.width;
+						} else {
+                            processedWidth = size.width;
+							processedHeight = size.height;
+                        }
+
+
                         // Create InputImage from byte array
                         InputImage image = InputImage.fromByteArray(
                                 bytes,
@@ -855,23 +866,38 @@ public class CameraActivity extends Fragment {
                         }
 
 
-		                textRecognizer.process(image)
+		                 textRecognizer.process(image)
 		                        .addOnSuccessListener(new OnSuccessListener<Text>() {
 		                            @Override
 		                            public void onSuccess(Text visionText) {
 		                                JSObject ret = new JSObject();
+										JSObject inputImageSize = new JSObject();
+										inputImageSize.put("width", processedWidth);
+										inputImageSize.put("height", processedHeight);
+										ret.put("imageSize", inputImageSize);
+										
 		                                String resultText = visionText.getText();
 		                                ret.put("text", resultText);
 
 		                                JSObject blocks = new JSObject();
 		                                int blockIndex = 0;
 		                                for (Text.TextBlock block : visionText.getTextBlocks()) {
+											Text.Line firstLine = block.getLines().get(0);
+											float confidence = 0;
+											if (firstLine != null) {
+												confidence = firstLine.getConfidence();
+											}
 		                                    JSObject blockData = new JSObject();
+											Rect boundingBox = block.getBoundingBox();
+											String rectString = String.format("%d,%d,%d,%d", boundingBox.left, boundingBox.top, boundingBox.right, boundingBox.bottom);
 		                                    blockData.put("text", block.getText());
+											blockData.put("boundingBox", rectString);
+		                                    blockData.put("confidence", confidence);
 		                                    blocks.put("block" + blockIndex, blockData);
 		                                    blockIndex++;
 		                                }
 		                                ret.put("blocks", blocks);
+										
 
 		                                eventListener.onSnapshotTaken(ret);
 		                            }
