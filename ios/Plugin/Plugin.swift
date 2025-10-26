@@ -26,6 +26,14 @@ public class CameraPreview: CAPPlugin{
     var disableAudio: Bool = false
 
     var currentReadCaptureCall: CAPPluginCall?
+    
+    // MARK: - Overlay properties
+    var overlayView: CameraOverlayView?
+    var showOverlay: Bool = false
+    var overlayDocumentType: String = "idCard"
+    var overlayBorderColor: String = "#FFFFFF"
+    var overlayBackgroundColor: String = "#00000080"
+    var overlayLabelText: String = ""
 
 
     @objc func rotated() {
@@ -44,6 +52,12 @@ public class CameraPreview: CAPPlugin{
         }
 
         cameraController.updateVideoOrientation()
+        
+        // Update overlay frame and cutout if overlay is visible
+        if let overlayView = self.overlayView {
+            overlayView.frame = self.previewView.frame
+            self.updateOverlayForCurrentOrientation()
+        }
     }
 
     @objc func start(_ call: CAPPluginCall) {
@@ -73,6 +87,13 @@ public class CameraPreview: CAPPlugin{
         self.storeToFile = call.getBool("storeToFile") ?? false
         self.enableZoom = call.getBool("enableZoom") ?? false
         self.disableAudio = call.getBool("disableAudio") ?? false
+        
+        // MARK: - Overlay configuration
+        self.showOverlay = call.getBool("showOverlay") ?? false
+        self.overlayDocumentType = call.getString("overlayDocumentType") ?? "idCard"
+        self.overlayBorderColor = call.getString("overlayBorderColor") ?? "#FFFFFF"
+        self.overlayBackgroundColor = call.getString("overlayBackgroundColor") ?? "#00000080"
+        self.overlayLabelText = call.getString("overlayLabelText") ?? ""
 
         AVCaptureDevice.requestAccess(for: .video, completionHandler: { (granted: Bool) in
             guard granted else {
@@ -103,6 +124,11 @@ public class CameraPreview: CAPPlugin{
 
                         let frontView = self.toBack! ? self.webView : self.previewView
                         self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
+                        
+                        // MARK: - Setup overlay if enabled
+                        if self.showOverlay {
+                            self.setupOverlay()
+                        }
 
                         if self.rotateWhenOrientationChanged == true {
                             NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
@@ -131,6 +157,11 @@ public class CameraPreview: CAPPlugin{
                 self.cameraController.captureSession?.stopRunning()
                 self.previewView.removeFromSuperview()
                 self.webView?.isOpaque = true
+                
+                // Clean up overlay
+                self.overlayView?.removeFromSuperview()
+                self.overlayView = nil
+                
                 call.resolve()
             } else {
                 call.reject("camera already stopped")
@@ -312,12 +343,184 @@ public class CameraPreview: CAPPlugin{
             }
         }
     }
+    
+    // MARK: - Overlay Methods
+    @objc func showOverlay(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            if self.overlayView == nil {
+                self.setupOverlay()
+            }
+            self.overlayView?.isHidden = false
+            call.resolve()
+        }
+    }
+    
+    @objc func hideOverlay(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.overlayView?.isHidden = true
+            call.resolve()
+        }
+    }
+    
+    @objc func updateOverlayBorderColor(_ call: CAPPluginCall) {
+        guard let colorString = call.getString("color") else {
+            call.reject("Color parameter is required")
+            return
+        }
+        
+        DispatchQueue.main.async {
+            let color = self.colorFromHex(colorString)
+            self.overlayView?.updateBorderColor(color)
+            call.resolve()
+        }
+    }
+    
+    @objc func updateOverlayText(_ call: CAPPluginCall) {
+        guard let text = call.getString("text") else {
+            call.reject("Text parameter is required")
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.overlayView?.updateLabelText(text)
+            call.resolve()
+        }
+    }
+    
+    @objc func startOverlayPulse(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.overlayView?.pulseAnimation()
+            call.resolve()
+        }
+    }
+    
+    @objc func stopOverlayPulse(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.overlayView?.stopPulseAnimation()
+            call.resolve()
+        }
+    }
+    
+    // MARK: - Private Overlay Methods
+    private func setupOverlay() {
+        guard let parentView = self.previewView?.superview else { return }
+        
+        self.overlayView = CameraOverlayView(frame: self.previewView.frame)
+        guard let overlayView = self.overlayView else { return }
+        
+        parentView.addSubview(overlayView)
+        
+        // Configure overlay based on document type
+        let documentType: CameraOverlayView.DocumentType
+        switch self.overlayDocumentType {
+        case "passport":
+            documentType = .passport
+        case "idCard":
+            documentType = .idCard
+        default:
+            documentType = .idCard
+        }
+        
+        overlayView.configureForDocument(
+            documentType,
+            in: overlayView.bounds,
+            labelText: self.overlayLabelText
+        )
+        
+        // Apply custom colors
+        let borderColor = colorFromHex(self.overlayBorderColor)
+        let backgroundColor = colorFromHex(self.overlayBackgroundColor)
+        
+        overlayView.updateBorderColor(borderColor)
+        
+        // Set up close button callback
+        overlayView.onClosePressed = { [weak self] in
+            self?.handleOverlayClose()
+        }
+        
+        // Bring to front if not using toBack mode
+        if !self.toBack! {
+            parentView.bringSubviewToFront(overlayView)
+        }
+    }
+    
+    private func updateOverlayForCurrentOrientation() {
+        guard let overlayView = self.overlayView else { return }
+        
+        let documentType: CameraOverlayView.DocumentType
+        switch self.overlayDocumentType {
+        case "passport":
+            documentType = .passport
+        case "idCard":
+            documentType = .idCard
+        default:
+            documentType = .idCard
+        }
+        
+        overlayView.configureForDocument(
+            documentType,
+            in: overlayView.bounds,
+            labelText: self.overlayLabelText
+        )
+    }
+    
+    private func colorFromHex(_ hex: String) -> UIColor {
+        var cString: String = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        
+        if cString.hasPrefix("#") {
+            cString.remove(at: cString.startIndex)
+        }
+        
+        var rgbValue: UInt64 = 0
+        let length = cString.count
+        
+        if length == 6 || length == 8 {
+            Scanner(string: cString).scanHexInt64(&rgbValue)
+            
+            if length == 6 {
+                return UIColor(
+                    red: CGFloat((rgbValue & 0xFF0000) >> 16) / 255.0,
+                    green: CGFloat((rgbValue & 0x00FF00) >> 8) / 255.0,
+                    blue: CGFloat(rgbValue & 0x0000FF) / 255.0,
+                    alpha: 1.0
+                )
+            } else {
+                return UIColor(
+                    red: CGFloat((rgbValue & 0xFF000000) >> 24) / 255.0,
+                    green: CGFloat((rgbValue & 0x00FF0000) >> 16) / 255.0,
+                    blue: CGFloat((rgbValue & 0x0000FF00) >> 8) / 255.0,
+                    alpha: CGFloat(rgbValue & 0x000000FF) / 255.0
+                )
+            }
+        }
+        
+        return UIColor.white
+    }
+    
+    // MARK: - Close Handler
+    private func handleOverlayClose() {
+        DispatchQueue.main.async {
+            // Stop camera and cleanup
+            if self.cameraController.captureSession?.isRunning ?? false {
+                self.cameraController.captureSession?.stopRunning()
+                self.previewView.removeFromSuperview()
+                self.webView?.isOpaque = true
+                
+                // Clean up overlay
+                self.overlayView?.removeFromSuperview()
+                self.overlayView = nil
+                
+                // Notify JavaScript side that camera was closed
+                self.notifyListeners("cameraClosedByUser", data: [:])
+            }
+        }
+    }
 
 }
 extension CameraPreview: CameraTextRecognitionDelegate {
-    func didRecognizeText(text: String) {
-        print("Text detected: \(text)")
+    func didRecognizeText(blocks: [[String: Any]]) {
+        // print("Text detected: \(blocks)")
         // Send the recognized text to the JavaScript side
-        self.notifyListeners("textRecognized", data: ["value": text])
+        self.notifyListeners("textRecognized", data: ["value": blocks])
     }
 }

@@ -15,4 +15,10 @@ CAP_PLUGIN(CameraPreview, "CameraPreview",
            CAP_PLUGIN_METHOD(stopRecordVideo, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(isCameraStarted, CAPPluginReturnPromise);
 		   CAP_PLUGIN_METHOD(readCapture, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(showOverlay, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(hideOverlay, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(updateOverlayBorderColor, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(updateOverlayText, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(startOverlayPulse, CAPPluginReturnPromise);
+		   CAP_PLUGIN_METHOD(stopOverlayPulse, CAPPluginReturnPromise);
 )

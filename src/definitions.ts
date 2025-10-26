@@ -64,7 +64,9 @@ export interface CameraPreviewPlugin {
   stop(): Promise<void>;
   stopRecordVideo(): Promise<void>;
   capture(options: CameraPreviewPictureOptions): Promise<{ value: string }>;
-  captureSample(options: CameraSampleOptions): Promise<{ base64: string, data: string, width: number, height: number, orientation: number, exif: string }>;
+  captureSample(
+    options: CameraSampleOptions,
+  ): Promise<{ base64: string; data: string; width: number; height: number; orientation: number; exif: string }>;
   readCapture(options: CameraSampleOptions): Promise<Record<string, any>>;
   detectFace(): Promise<void>;
   getSupportedFlashModes(): Promise<{
@@ -74,4 +76,5 @@ export interface CameraPreviewPlugin {
   flip(): Promise<void>;
   setOpacity(options: CameraOpacityOptions): Promise<void>;
   isCameraStarted(): Promise<{ value: boolean }>;
+  addListener(eventName: 'textRecognized', listenerFunc: (data: { value: string }) => void): Promise<void>;
 }

@@ -12,7 +12,7 @@ import Vision
 import ImageIO
 
 protocol CameraTextRecognitionDelegate: AnyObject {
-    func didRecognizeText(text: String)
+    func didRecognizeText(blocks: [[String: Any]])
 }
 class CameraController: NSObject {
     var captureSession: AVCaptureSession?
@@ -183,16 +183,42 @@ extension CameraController {
                 return
             }
 
-            var recognizedText = ""
-            for observation in observations {
-                guard let topCandidate = observation.topCandidates(1).first else { continue }
-                recognizedText += topCandidate.string + " "
-				// print("Recognized text so far: \(recognizedText)")
-            }
-            
+            // 1. Create an array to hold the structured recognition data
+		    var recognizedTextBlocks: [[String: Any]] = []
+
+		    for observation in observations {
+		        // Get the top recognized text candidate
+		        guard let topCandidate = observation.topCandidates(1).first else { continue }
+
+		        // The bounding box is normalized (0.0 to 1.0, with origin at bottom-left)
+		        let normalizedBoundingBox = observation.boundingBox
+
+		        // 2. Format the bounding box for easier use in JS/JSON
+		        // You'll want the (x, y, width, height) of the normalized CGRect
+		        let box = normalizedBoundingBox
+		        
+		        // 3. Create a dictionary for the current text block
+		        let block: [String: Any] = [
+		            "text": topCandidate.string,
+		            "confidence": topCandidate.confidence, // Float (0.0 to 1.0)
+		            // Storing the normalized (x, y, w, h) values
+		            "boundingBox": [
+		                "x": box.origin.x,
+		                "y": box.origin.y,
+		                "width": box.size.width,
+		                "height": box.size.height
+		            ]
+		            // If you prefer a comma-separated string format:
+		            // "boundingBoxString": "\(box.origin.x),\(box.origin.y),\(box.size.width),\(box.size.height)"
+		        ]
+
+		        // 4. Append the block to the results array
+		        recognizedTextBlocks.append(block)
+		    }
+		            
             // Pass the recognized text to the delegate on the main thread
             DispatchQueue.main.async {
-                self.textRecognitionDelegate?.didRecognizeText(text: recognizedText.trimmingCharacters(in: .whitespacesAndNewlines))
+                self.textRecognitionDelegate?.didRecognizeText(blocks: recognizedTextBlocks)
             }
         }
 
