@@ -185,4 +185,17 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
   async isCameraStarted(): Promise<{ value: boolean }> {
     throw this.unimplemented('Not implemented on web.');
   }
+
+  async showOverlay(): Promise<void> {
+    throw new Error('showOverlay not supported under the web platform');
+  }
+  async hideOverlay(): Promise<void> {
+    throw new Error('hideOverlay not supported under the web platform');
+  }
+  async updateOverlayBorderColor(): Promise<void> {
+    throw new Error('updateOverlayBorderColor not supported under the web platform');
+  }
+  async updateOverlayText(): Promise<void> {
+    throw new Error('updateOverlayText not supported under the web platform');
+  }
 }

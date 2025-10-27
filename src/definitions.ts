@@ -1,3 +1,5 @@
+import type { PluginListenerHandle } from '@capacitor/core';
+
 export type CameraPosition = 'rear' | 'front';
 export interface CameraPreviewOptions {
   /** Parent element to attach the video preview element to (applicable to the web platform only) */
@@ -34,6 +36,11 @@ export interface CameraPreviewOptions {
   enableOpacity?: boolean;
   /** Defaults to false - Android only.  Set if camera preview will support pinch to zoom. */
   enableZoom?: boolean;
+  showOverlay: boolean;
+  overlayDocumentType: string;
+  overlayBorderColor: string;
+  overlayLabelText: string;
+  overlayBackgroundColor: string;
 }
 export interface CameraPreviewPictureOptions {
   /** The picture height, optional, default 0 (Device default) */
@@ -76,5 +83,13 @@ export interface CameraPreviewPlugin {
   flip(): Promise<void>;
   setOpacity(options: CameraOpacityOptions): Promise<void>;
   isCameraStarted(): Promise<{ value: boolean }>;
-  addListener(eventName: 'textRecognized', listenerFunc: (data: { value: string }) => void): Promise<void>;
+  addListener(
+    eventName: 'textRecognized' | 'cameraClosedByUser',
+    listenerFunc: (data: { value: string }) => void,
+  ): Promise<PluginListenerHandle>;
+
+  showOverlay(): Promise<void>;
+  hideOverlay(): Promise<void>;
+  updateOverlayBorderColor(options: { color: string }): Promise<void>;
+  updateOverlayText(options: { text: string }): Promise<void>;
 }
