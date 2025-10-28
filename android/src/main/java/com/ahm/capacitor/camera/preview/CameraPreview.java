@@ -289,6 +289,114 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         call.resolve(ret);
     }
 
+    @PluginMethod
+    public void showOverlay(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+        
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.showOverlay();
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void hideOverlay(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+        
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.hideOverlay();
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void updateOverlayBorderColor(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+
+        String colorString = call.getString("color");
+        if (colorString == null || colorString.isEmpty()) {
+            call.reject("Color parameter is required");
+            return;
+        }
+
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.updateOverlayBorderColor(colorString);
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void updateOverlayText(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+
+        String text = call.getString("text");
+        if (text == null) {
+            call.reject("Text parameter is required");
+            return;
+        }
+
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.updateOverlayText(text);
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void startOverlayPulse(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+        
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.startOverlayPulse();
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void stopOverlayPulse(PluginCall call) {
+        if (this.hasCamera(call) == false) {
+            call.reject("Camera is not running");
+            return;
+        }
+        
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                fragment.stopOverlayPulse();
+                call.resolve();
+            }
+        });
+    }
+
     @PermissionCallback
     private void handleCameraPermissionResult(PluginCall call) {
         if (PermissionState.GRANTED.equals(getPermissionState(CAMERA_PERMISSION_ALIAS))) {
@@ -319,6 +427,14 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         final Boolean enableZoom = call.getBoolean("enableZoom", false);
         final Boolean disableExifHeaderStripping = call.getBoolean("disableExifHeaderStripping", true);
         final Boolean lockOrientation = call.getBoolean("lockAndroidOrientation", false);
+        
+        // Overlay configuration parameters
+        final Boolean showOverlay = call.getBoolean("showOverlay", false);
+        final String overlayDocumentType = call.getString("overlayDocumentType", "idCard");
+        final String overlayBorderColor = call.getString("overlayBorderColor", "#FFFFFF");
+        final String overlayBackgroundColor = call.getString("overlayBackgroundColor", "#00000080");
+        final String overlayLabelText = call.getString("overlayLabelText", "");
+        
         previousOrientationRequest = getBridge().getActivity().getRequestedOrientation();
 
         fragment = new CameraActivity();
@@ -332,6 +448,13 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
         fragment.toBack = toBack;
         fragment.enableOpacity = enableOpacity;
         fragment.enableZoom = enableZoom;
+        
+        // Set overlay configuration
+        fragment.showOverlay = showOverlay;
+        fragment.overlayDocumentType = overlayDocumentType;
+        fragment.overlayBorderColor = overlayBorderColor;
+        fragment.overlayBackgroundColor = overlayBackgroundColor;
+        fragment.overlayLabelText = overlayLabelText;
 
         bridge
             .getActivity()
@@ -459,7 +582,35 @@ public class CameraPreview extends Plugin implements CameraActivity.CameraPrevie
     public void onFocusSetError(String message) {}
 
     @Override
-    public void onBackButton() {}
+    public void onBackButton() {
+        // Handle overlay close button - stop camera completely
+        bridge.getActivity().runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                FrameLayout containerView = getBridge().getActivity().findViewById(containerViewId);
+                
+                // Restore original orientation
+                getBridge().getActivity().setRequestedOrientation(previousOrientationRequest);
+                
+                if (containerView != null) {
+                    ((ViewGroup) getBridge().getWebView().getParent()).removeView(containerView);
+                    getBridge().getWebView().setBackgroundColor(Color.WHITE);
+                    
+                    android.app.FragmentManager fragmentManager = getActivity().getFragmentManager();
+                    android.app.FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
+                    
+                    if (fragment != null) {
+                        fragmentTransaction.remove(fragment);
+                        fragmentTransaction.commit();
+                        fragment = null;
+                    }
+                    
+                    // Notify JavaScript side that camera was closed by user
+                    notifyListeners("cameraClosedByUser", new JSObject());
+                }
+            }
+        });
+    }
 
     @Override
     public void onCameraStarted() {

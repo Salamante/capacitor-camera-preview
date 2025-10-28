@@ -124,6 +124,14 @@ public class CameraActivity extends Fragment {
     public boolean enableOpacity = false;
     public boolean enableZoom = false;
 
+    // Overlay properties
+    public boolean showOverlay = false;
+    public String overlayDocumentType = "idCard";
+    public String overlayBorderColor = "#FFFFFF";
+    public String overlayBackgroundColor = "#00000080";
+    public String overlayLabelText = "";
+    private CameraOverlayView overlayView;
+
     public int width;
     public int height;
     public int x;
@@ -375,7 +383,7 @@ public class CameraActivity extends Fragment {
 
         Log.d(TAG, "cameraCurrentlyLocked:" + cameraCurrentlyLocked);
 
-        final FrameLayout frameContainerLayout = (FrameLayout) view.findViewById(
+        frameContainerLayout = (FrameLayout) view.findViewById(
             getResources().getIdentifier("frame_container", "id", appResourcesPackage)
         );
 
@@ -400,6 +408,11 @@ public class CameraActivity extends Fragment {
                             );
                             camViewLayout.gravity = Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL;
                             frameCamContainerLayout.setLayoutParams(camViewLayout);
+                            
+                            // Setup overlay if enabled
+                            if (showOverlay) {
+                                setupOverlay();
+                            }
                         }
                     }
                 }
@@ -418,6 +431,12 @@ public class CameraActivity extends Fragment {
             mCamera.setPreviewCallback(null);
             mCamera.release();
             mCamera = null;
+        }
+        
+        // Clean up overlay
+        if (overlayView != null && frameContainerLayout != null) {
+            frameContainerLayout.removeView(overlayView);
+            overlayView = null;
         }
     }
 
@@ -1370,5 +1389,125 @@ public class CameraActivity extends Fragment {
         float x = event.getX(0) - event.getX(1);
         float y = event.getY(0) - event.getY(1);
         return (float) Math.sqrt(x * x + y * y);
+    }
+    
+    // MARK: - Overlay Methods
+    public void showOverlay() {
+        if (overlayView == null) {
+            setupOverlay();
+        }
+        if (overlayView != null) {
+            overlayView.setVisibility(View.VISIBLE);
+        }
+    }
+    
+    public void hideOverlay() {
+        if (overlayView != null) {
+            overlayView.setVisibility(View.GONE);
+        }
+    }
+    
+    public void updateOverlayBorderColor(String colorString) {
+        if (overlayView != null) {
+            overlayView.updateBorderColor(colorString);
+        }
+    }
+    
+    public void updateOverlayText(String text) {
+        if (overlayView != null) {
+            overlayView.updateLabelText(text);
+        }
+    }
+    
+    public void startOverlayPulse() {
+        if (overlayView != null) {
+            overlayView.startPulseAnimation();
+        }
+    }
+    
+    public void stopOverlayPulse() {
+        if (overlayView != null) {
+            overlayView.stopPulseAnimation();
+        }
+    }
+    
+    private void setupOverlay() {
+        if (getActivity() == null || frameContainerLayout == null) {
+            return;
+        }
+        
+        overlayView = new CameraOverlayView(getActivity());
+        
+        // Configure overlay based on document type
+        CameraOverlayView.DocumentType documentType;
+        if ("passport".equals(overlayDocumentType)) {
+            documentType = CameraOverlayView.DocumentType.PASSPORT;
+        } else {
+            documentType = CameraOverlayView.DocumentType.ID_CARD;
+        }
+        
+        overlayView.configureForDocument(documentType, overlayLabelText);
+        
+        // Apply custom colors
+        overlayView.updateBorderColor(overlayBorderColor);
+        
+        // Set up close button callback
+        overlayView.setOnCloseListener(new CameraOverlayView.OnCloseListener() {
+            @Override
+            public void onClose() {
+                handleOverlayClose();
+            }
+        });
+        
+        // Add overlay to the frame container
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        );
+        
+        frameContainerLayout.addView(overlayView, params);
+        
+        // Initially hide overlay if showOverlay is false
+        if (!showOverlay) {
+            overlayView.setVisibility(View.GONE);
+        }
+    }
+    
+    private void handleOverlayClose() {
+        // Stop camera and cleanup
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    // Stop camera preview
+                    if (mCamera != null) {
+                        try {
+                            mCamera.stopPreview();
+                            mCamera.release();
+                        } catch (Exception e) {
+                            // Ignore errors during cleanup
+                        }
+                        mCamera = null;
+                    }
+                    
+                    // Clean up overlay
+                    if (overlayView != null && frameContainerLayout != null) {
+                        frameContainerLayout.removeView(overlayView);
+                        overlayView = null;
+                    }
+                    
+                    // Remove the entire camera fragment from parent
+                    if (mainLayout != null && mainLayout.getParent() != null) {
+                        ((ViewGroup) mainLayout.getParent()).removeView(mainLayout);
+                    }
+                    
+                    // Notify that camera should be stopped completely
+                    if (eventListener != null) {
+                        // Use onBackButton to trigger full camera stop in CameraPreview.java
+                        eventListener.onBackButton();
+                    }
+                }
+            });
+        }
     }
 }
