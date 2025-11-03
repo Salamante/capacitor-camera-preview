@@ -42,35 +42,91 @@ class CameraController: NSObject {
 
     var zoomFactor: CGFloat = 1.0
     
+    // Thread safety
+    private let cameraQueue = DispatchQueue(label: "com.camera.queue", qos: .userInitiated)
+    private var isCleaningUp = false
+    private var isDestroyed = false
+    private var safetyTimer: Timer?
+    
     private var requests = [VNRequest]()
-    private(set) var isRunningTextRecognition = false
-    private var frameCounter = 0
+    var isRunningTextRecognition = false
+	private var frameCounter = 0
     private var lastVisionProcessTime: Date = Date()
-    public var textRecognitionDelegate: CameraTextRecognitionDelegate?
+    public weak var textRecognitionDelegate: CameraTextRecognitionDelegate?
     
     // MARK: - Cleanup Methods
     func stopVision() {
-        isRunningTextRecognition = false
-        requests.removeAll()
-        frameCounter = 0
-        print("Vision processing stopped and cleaned up")
+        cameraQueue.sync {
+            guard !isDestroyed else { return }
+            isRunningTextRecognition = false
+            requests.removeAll()
+            frameCounter = 0
+            print("Vision processing stopped and cleaned up")
+        }
     }
     
     func cleanup() {
-        stopVision()
-        textRecognitionDelegate = nil
-        captureSession?.stopRunning()
-        captureSession = nil
-        previewLayer?.removeFromSuperlayer()
-        previewLayer = nil
-        print("CameraController cleanup completed")
+        cameraQueue.sync {
+            guard !isDestroyed else { return }
+            isCleaningUp = true
+            isDestroyed = true
+            
+            // Stop safety timer
+            safetyTimer?.invalidate()
+            safetyTimer = nil
+            
+            // Stop all processing immediately
+            isRunningTextRecognition = false
+            requests.removeAll()
+            frameCounter = 0
+            
+            // Clear delegate to prevent callbacks
+            textRecognitionDelegate = nil
+            
+            // Stop capture session on background thread
+            if let session = captureSession, session.isRunning {
+                session.stopRunning()
+            }
+            
+            // Clear all capture session inputs and outputs
+            captureSession?.inputs.forEach { input in
+                captureSession?.removeInput(input)
+            }
+            captureSession?.outputs.forEach { output in
+                captureSession?.removeOutput(output)
+            }
+            
+            captureSession = nil
+            frontCameraInput = nil
+            rearCameraInput = nil
+            photoOutput = nil
+            dataOutput = nil
+            
+            DispatchQueue.main.async {
+                self.previewLayer?.removeFromSuperlayer()
+                self.previewLayer = nil
+            }
+            
+            print("CameraController cleanup completed")
+        }
+    }
+    
+    deinit {
+        print("CameraController deinitializing")
+        cleanup()
     }
 }
 
 extension CameraController {
     func prepare(cameraPosition: String, disableAudio: Bool, completionHandler: @escaping (Error?) -> Void) {
-        // Clean up any existing session first
-        cleanup()
+        // Safety check
+        guard !isCleaningUp && !isDestroyed else {
+            completionHandler(CameraControllerError.invalidOperation)
+            return
+        }
+        
+        // Stop any existing Vision processing first
+        stopVision()
         
         func createCaptureSession() {
             self.captureSession = AVCaptureSession()
@@ -199,60 +255,88 @@ extension CameraController {
     }
     
     func setupVision() throws {
+        // TEMPORARILY DISABLE VISION PROCESSING TO ISOLATE CRASH
+        print("Vision processing temporarily disabled for crash debugging")
+        return
+        
+        /*
         let recognizeTextRequest = VNRecognizeTextRequest { [weak self] (request, error) in
             guard let self = self else { return }
             
             guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                print("No observations")
+				print("No observations")
                 return
             }
 
             // 1. Create an array to hold the structured recognition data
-            var recognizedTextBlocks: [[String: Any]] = []
+		    var recognizedTextBlocks: [[String: Any]] = []
 
-            for observation in observations {
-                // Get the top recognized text candidate
-                guard let topCandidate = observation.topCandidates(1).first else { continue }
+		    for observation in observations {
+		        // Get the top recognized text candidate
+		        guard let topCandidate = observation.topCandidates(1).first else { continue }
 
-                // The bounding box is normalized (0.0 to 1.0, with origin at bottom-left)
-                let normalizedBoundingBox = observation.boundingBox
+		        // The bounding box is normalized (0.0 to 1.0, with origin at bottom-left)
+		        let normalizedBoundingBox = observation.boundingBox
 
-                // 2. Format the bounding box for easier use in JS/JSON
-                // You'll want the (x, y, width, height) of the normalized CGRect
-                let box = normalizedBoundingBox
-                
-                // 3. Create a dictionary for the current text block
-                let block: [String: Any] = [
-                    "text": topCandidate.string,
-                    "confidence": topCandidate.confidence, // Float (0.0 to 1.0)
-                    // Storing the normalized (x, y, w, h) values
-                    "boundingBox": [
-                        "x": box.origin.x,
-                        "y": box.origin.y,
-                        "width": box.size.width,
-                        "height": box.size.height
-                    ]
-                    // If you prefer a comma-separated string format:
-                    // "boundingBoxString": "\(box.origin.x),\(box.origin.y),\(box.size.width),\(box.size.height)"
-                ]
+		        // 2. Format the bounding box for easier use in JS/JSON
+		        // You'll want the (x, y, width, height) of the normalized CGRect
+		        let box = normalizedBoundingBox
+		        
+		        // 3. Create a dictionary for the current text block
+		        let block: [String: Any] = [
+		            "text": topCandidate.string,
+		            "confidence": topCandidate.confidence, // Float (0.0 to 1.0)
+		            // Storing the normalized (x, y, w, h) values
+		            "boundingBox": [
+		                "x": box.origin.x,
+		                "y": box.origin.y,
+		                "width": box.size.width,
+		                "height": box.size.height
+		            ]
+		            // If you prefer a comma-separated string format:
+		            // "boundingBoxString": "\(box.origin.x),\(box.origin.y),\(box.size.width),\(box.size.height)"
+		        ]
 
-                // 4. Append the block to the results array
-                recognizedTextBlocks.append(block)
-            }
-                    
+		        // 4. Append the block to the results array
+		        recognizedTextBlocks.append(block)
+		    }
+		            
             // Pass the recognized text to the delegate on the main thread
             DispatchQueue.main.async { [weak self] in
-                self?.textRecognitionDelegate?.didRecognizeText(blocks: recognizedTextBlocks)
+                guard let self = self, 
+                      !self.isDestroyed,
+                      !self.isCleaningUp, 
+                      self.isRunningTextRecognition,
+                      let delegate = self.textRecognitionDelegate else { return }
+                
+                delegate.didRecognizeText(blocks: recognizedTextBlocks)
             }
         }
 
         recognizeTextRequest.recognitionLevel = .accurate
-        recognizeTextRequest.usesLanguageCorrection = false
+		recognizeTextRequest.usesLanguageCorrection = false
 
         self.requests = [recognizeTextRequest]
 
-        print("Vision setup complete")
-        self.isRunningTextRecognition = true
+		print("Vision setup complete")
+		self.isRunningTextRecognition = true
+        
+        // TEMPORARILY DISABLE SAFETY TIMER TO ISOLATE CRASH
+        // startSafetyTimer()
+        */
+    }
+    
+    private func startSafetyTimer() {
+        // TEMPORARILY DISABLED
+        return
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.safetyTimer?.invalidate()
+            self?.safetyTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
+                print("Safety timer triggered - performing cleanup")
+                self?.cleanup()
+            }
+        }
     }
 
     func setupGestures(target: UIView, enableZoom: Bool) {
@@ -652,27 +736,26 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
         
         // ---- Vision OCR Flow ----
-        if self.isRunningTextRecognition {
-            frameCounter += 1
-            
-            // Process every 30th frame (approximately 1 frame per second at 30fps)
-            // and ensure at least 0.5 seconds between processing attempts
-            let timeSinceLastProcess = Date().timeIntervalSince(lastVisionProcessTime)
-            if frameCounter % 30 != 0 || timeSinceLastProcess < 0.5 { 
-                return 
-            }
-            
+        // TEMPORARILY DISABLE VISION PROCESSING TO ISOLATE CRASH
+        return
+        
+        /*
+        if self.isRunningTextRecognition && !self.isCleaningUp && !self.isDestroyed {
+			frameCounter += 1
+        	if frameCounter % 10 != 0 { return } // process every 10th frame
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-            lastVisionProcessTime = Date()
-            
             let orientation = visionOrientation(for: connection.videoOrientation, isFrontCamera: false)
             let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
                                                             orientation: .up,
                                                             options: [:])
             
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                guard let self = self, self.isRunningTextRecognition else { return }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self, 
+                      !self.isDestroyed, 
+                      !self.isCleaningUp, 
+                      self.isRunningTextRecognition,
+                      !self.requests.isEmpty else { return }
                 
                 do {
                     try imageRequestHandler.perform(self.requests)
@@ -681,6 +764,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
                 }
             }
         }
+        */
     }
 }
 

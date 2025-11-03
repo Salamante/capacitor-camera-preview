@@ -38,75 +38,50 @@ public class CameraPreview: CAPPlugin{
     deinit {
         print("CameraPreview plugin deinitializing - cleaning up resources")
         
+        // Capture references for cleanup
+        let cameraController = self.cameraController
+        let overlayView = self.overlayView
+        
+        // Remove observers immediately
+        NotificationCenter.default.removeObserver(self)
+        
         // Ensure cleanup happens on main thread
-        DispatchQueue.main.async { [weak cameraController, weak overlayView] in
-            // Stop any ongoing animations first
-            overlayView?.stopPulseAnimation()
-            overlayView?.layer.removeAllAnimations()
-            
-            // Remove observers
-            NotificationCenter.default.removeObserver(self)
+        DispatchQueue.main.async {
+            // Clean up overlay
+            overlayView?.removeFromSuperview()
             
             // Clean up camera controller
-            cameraController?.cleanup()
-            
-            // Clean up overlay
-            if let overlay = overlayView {
-                overlay.onClosePressed = nil
-                overlay.removeFromSuperview()
-            }
+            cameraController.cleanup()
         }
     }
 
 
     @objc func rotated() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
+        let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
 
-            if UIApplication.shared.statusBarOrientation.isLandscape {
-                guard let y = self.y, let x = self.x, let width = self.width else { return }
-                self.previewView?.frame = CGRect(x: y, y: x, width: max(height, width), height: min(height, width))
-                self.cameraController.previewLayer?.frame = self.previewView?.frame ?? CGRect.zero
-            }
+        if UIApplication.shared.statusBarOrientation.isLandscape {
+            self.previewView.frame = CGRect(x: self.y!, y: self.x!, width: max(height, self.width!), height: min(height, self.width!))
+            self.cameraController.previewLayer?.frame = self.previewView.frame
+        }
 
-            if UIApplication.shared.statusBarOrientation.isPortrait {
-                if let previewView = self.previewView, let x = self.x, let y = self.y, let width = self.width {
-                    previewView.frame = CGRect(x: x, y: y, width: min(height, width), height: max(height, width))
-                }
-                self.cameraController.previewLayer?.frame = self.previewView?.frame ?? CGRect.zero
+        if UIApplication.shared.statusBarOrientation.isPortrait {
+            if self.previewView != nil && self.x != nil && self.y != nil && self.width != nil && self.height != nil {
+                self.previewView.frame = CGRect(x: self.x!, y: self.y!, width: min(height, self.width!), height: max(height, self.width!))
             }
+            self.cameraController.previewLayer?.frame = self.previewView.frame
+        }
 
-            self.cameraController.updateVideoOrientation()
-            
-            // Update overlay frame and cutout if overlay is visible
-            if let overlayView = self.overlayView, let previewView = self.previewView {
-                overlayView.frame = previewView.frame
-                self.updateOverlayForCurrentOrientation()
-            }
+        cameraController.updateVideoOrientation()
+        
+        // Update overlay frame and cutout if overlay is visible
+        if let overlayView = self.overlayView {
+            overlayView.frame = self.previewView.frame
+            self.updateOverlayForCurrentOrientation()
         }
     }
 
     @objc func start(_ call: CAPPluginCall) {
-        // Stop any existing Vision processing first
-        self.cameraController.stopVision()
-        
-        // Clean up any existing overlay
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            if let overlay = self.overlayView {
-                overlay.stopPulseAnimation()
-                overlay.layer.removeAllAnimations()
-                overlay.onClosePressed = nil
-                overlay.removeFromSuperview()
-                self.overlayView = nil
-                print("Cleaned up existing overlay before starting new camera session")
-            }
-        }
-        
-        cameraController.textRecognitionDelegate = self
+		cameraController.textRecognitionDelegate = self
         self.cameraPosition = call.getString("position") ?? "rear"
         self.highResolutionOutput = call.getBool("enableHighResolution") ?? false
         self.cameraController.highResolutionOutput = self.highResolutionOutput
@@ -150,43 +125,46 @@ public class CameraPreview: CAPPlugin{
                 if self.cameraController.captureSession?.isRunning ?? false {
                     call.reject("camera already started")
                 } else {
-                    self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) { error in
-                        if let error = error {
-                            print("Error at 88: \(error)")
-                            call.reject(error.localizedDescription)
-                            return
-                        }
-                        let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
-                        self.previewView = UIView(frame: CGRect(x: self.x ?? 0, y: self.y ?? 0, width: self.width!, height: height))
-                        self.webView?.isOpaque = false
-                        self.webView?.backgroundColor = UIColor.clear
-                        self.webView?.scrollView.backgroundColor = UIColor.clear
-                        self.webView?.superview?.addSubview(self.previewView)
-                        if self.toBack! {
-                            self.webView?.superview?.bringSubviewToFront(self.webView!)
-                        }
-                        try? self.cameraController.displayPreview(on: self.previewView)
-
-                        let frontView = self.toBack! ? self.webView : self.previewView
-                        self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
-                        
-                        // MARK: - Setup overlay if enabled
-                        if self.showOverlay {
-                            // Small delay to ensure preview is properly setup
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                self.setupOverlay()
-                            }
-                        }
-
-                        if self.rotateWhenOrientationChanged == true {
-                            NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
-                        }
-
-						call.resolve()
-                    }
+                    self.startCameraSession(call)
                 }
             }
         })
+    }
+    
+    private func startCameraSession(_ call: CAPPluginCall) {
+        self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) { error in
+            if let error = error {
+                print("Error at 88: \(error)")
+                call.reject(error.localizedDescription)
+                return
+            }
+            let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
+            self.previewView = UIView(frame: CGRect(x: self.x ?? 0, y: self.y ?? 0, width: self.width!, height: height))
+            self.webView?.isOpaque = false
+            self.webView?.backgroundColor = UIColor.clear
+            self.webView?.scrollView.backgroundColor = UIColor.clear
+            self.webView?.superview?.addSubview(self.previewView)
+            if self.toBack! {
+                self.webView?.superview?.bringSubviewToFront(self.webView!)
+            }
+            try? self.cameraController.displayPreview(on: self.previewView)
+
+            let frontView = self.toBack! ? self.webView : self.previewView
+            self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
+            
+            // MARK: - Setup overlay if enabled
+            // TEST: Re-enable overlay only (Vision still disabled)
+            if self.showOverlay {
+                self.setupOverlay()
+            }
+            print("Overlay re-enabled for testing (Vision still disabled)")
+
+            if self.rotateWhenOrientationChanged == true {
+                NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
+            }
+
+            call.resolve()
+        }
     }
 
 
@@ -219,20 +197,16 @@ public class CameraPreview: CAPPlugin{
             }
             
             if self.cameraController.captureSession?.isRunning ?? false {
-                // Stop any ongoing animations first
-                self.overlayView?.stopPulseAnimation()
-                self.overlayView?.layer.removeAllAnimations()
-                
                 // Remove observers
                 NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
                 
-                // Stop Vision processing and clean up camera
-                self.cameraController.stopVision()
-                self.cameraController.captureSession?.stopRunning()
+                // Stop camera session immediately on main thread
+                if let session = self.cameraController.captureSession, session.isRunning {
+                    session.stopRunning()
+                }
                 
                 // Clean up overlay
                 if let overlay = self.overlayView {
-                    overlay.onClosePressed = nil // Break the callback reference
                     overlay.removeFromSuperview()
                     self.overlayView = nil
                 }
@@ -339,16 +313,11 @@ public class CameraPreview: CAPPlugin{
     
     @objc func readCapture(_ call: CAPPluginCall) {
         do {
-            // Only setup Vision if it's not already running
-            if !self.cameraController.isRunningTextRecognition {
-                try self.cameraController.setupVision()
-                print("readCapture Method Called - Vision setup completed")
-            } else {
-                print("readCapture Method Called - Vision already running")
-            }
-            call.resolve()
+            try self.cameraController.setupVision()
+			print("readCapture Method Called")
+			call.resolve()
         } catch {
-            call.reject("readCapture error: \(error.localizedDescription)")
+            call.reject("readCapture error")
         }
     }
 
@@ -434,42 +403,17 @@ public class CameraPreview: CAPPlugin{
     
     // MARK: - Overlay Methods
     @objc func showOverlay(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                call.reject("Plugin instance deallocated")
-                return
+        DispatchQueue.main.async {
+            if self.overlayView == nil {
+                self.setupOverlay()
             }
-            
-            // Always recreate overlay to ensure it's properly setup
-            if let existingOverlay = self.overlayView {
-                existingOverlay.stopPulseAnimation()
-                existingOverlay.layer.removeAllAnimations()
-                existingOverlay.onClosePressed = nil
-                existingOverlay.removeFromSuperview()
-                self.overlayView = nil
-                print("Removed existing overlay before creating new one")
-            }
-            
-            self.showOverlay = true
-            self.setupOverlay()
-            
-            if let overlay = self.overlayView {
-                overlay.isHidden = false
-                print("Overlay created and shown successfully")
-                call.resolve()
-            } else {
-                call.reject("Failed to create overlay")
-            }
+            self.overlayView?.isHidden = false
+            call.resolve()
         }
     }
     
     @objc func hideOverlay(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                call.reject("Plugin instance deallocated")
-                return
-            }
-            
+        DispatchQueue.main.async {
             self.overlayView?.isHidden = true
             call.resolve()
         }
@@ -481,38 +425,9 @@ public class CameraPreview: CAPPlugin{
             return
         }
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                call.reject("Plugin instance deallocated")
-                return
-            }
-            
-            // If overlay doesn't exist, recreate it
-            if self.overlayView == nil && self.showOverlay {
-                print("Overlay was missing, recreating it...")
-                self.setupOverlay()
-            }
-            
-            guard let overlayView = self.overlayView else {
-                print("Overlay not available - creating new overlay")
-                // Try to create overlay if it doesn't exist
-                if self.showOverlay {
-                    self.setupOverlay()
-                    guard let newOverlay = self.overlayView else {
-                        call.reject("Failed to create overlay")
-                        return
-                    }
-                    let color = self.colorFromHex(colorString)
-                    newOverlay.updateBorderColor(color)
-                    call.resolve()
-                } else {
-                    call.reject("Overlay not available")
-                }
-                return
-            }
-            
+        DispatchQueue.main.async {
             let color = self.colorFromHex(colorString)
-            overlayView.updateBorderColor(color)
+            self.overlayView?.updateBorderColor(color)
             call.resolve()
         }
     }
@@ -523,74 +438,32 @@ public class CameraPreview: CAPPlugin{
             return
         }
         
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let overlayView = self.overlayView else {
-                call.reject("Overlay not available")
-                return
-            }
-            overlayView.updateLabelText(text)
+        DispatchQueue.main.async {
+            self.overlayView?.updateLabelText(text)
             call.resolve()
         }
     }
     
     @objc func startOverlayPulse(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                call.reject("Plugin instance deallocated")
-                return
-            }
-            
-            // If overlay doesn't exist, recreate it
-            if self.overlayView == nil && self.showOverlay {
-                print("Overlay was missing for pulse, recreating it...")
-                self.setupOverlay()
-            }
-            
-            guard let overlayView = self.overlayView else {
-                if self.showOverlay {
-                    call.reject("Failed to create overlay for pulse animation")
-                } else {
-                    call.reject("Overlay not available - overlay not enabled")
-                }
-                return
-            }
-            overlayView.pulseAnimation()
+        DispatchQueue.main.async {
+            self.overlayView?.pulseAnimation()
             call.resolve()
         }
     }
     
     @objc func stopOverlayPulse(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else {
-                call.reject("Plugin instance deallocated")
-                return
-            }
-            
-            guard let overlayView = self.overlayView else {
-                // If overlay doesn't exist, consider it already stopped
-                call.resolve()
-                return
-            }
-            overlayView.stopPulseAnimation()
+        DispatchQueue.main.async {
+            self.overlayView?.stopPulseAnimation()
             call.resolve()
         }
     }
     
     // MARK: - Private Overlay Methods
     private func setupOverlay() {
-        guard let previewView = self.previewView,
-              let parentView = previewView.superview else { 
-            print("Cannot setup overlay: previewView or parentView is nil")
-            return 
-        }
+        guard let parentView = self.previewView?.superview else { return }
         
-        print("Setting up overlay with frame: \(previewView.frame)")
-        
-        self.overlayView = CameraOverlayView(frame: previewView.frame)
-        guard let overlayView = self.overlayView else { 
-            print("Failed to create CameraOverlayView")
-            return 
-        }
+        self.overlayView = CameraOverlayView(frame: self.previewView.frame)
+        guard let overlayView = self.overlayView else { return }
         
         parentView.addSubview(overlayView)
         
@@ -626,8 +499,6 @@ public class CameraPreview: CAPPlugin{
         if !self.toBack! {
             parentView.bringSubviewToFront(overlayView)
         }
-        
-        print("Overlay setup completed successfully")
     }
     
     private func updateOverlayForCurrentOrientation() {
@@ -685,36 +556,16 @@ public class CameraPreview: CAPPlugin{
     
     // MARK: - Close Handler
     private func handleOverlayClose() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            // Stop any ongoing animations first
-            self.overlayView?.stopPulseAnimation()
-            self.overlayView?.layer.removeAllAnimations()
-            
-            // Remove observers
-            NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
-            
-            // Stop Vision processing and camera
-            self.cameraController.stopVision()
-            if self.cameraController.captureSession?.isRunning ?? false {
-                self.cameraController.captureSession?.stopRunning()
+        DispatchQueue.main.async {
+            // Stop camera session immediately (same as stop method)
+            if let session = self.cameraController.captureSession, session.isRunning {
+                session.stopRunning()
             }
             
-            // Clean up overlay first
-            if let overlay = self.overlayView {
-                overlay.onClosePressed = nil // Break the callback reference
-                overlay.removeFromSuperview()
-                self.overlayView = nil
-            }
-            
-            // Clean up preview view
-            if let preview = self.previewView {
-                preview.removeFromSuperview()
-                self.previewView = nil
-            }
-            
-            // Reset webview properties
+            // Clean up UI elements
+            self.previewView?.removeFromSuperview()
+            self.overlayView?.removeFromSuperview()
+            self.overlayView = nil
             self.webView?.isOpaque = true
             
             // Notify JavaScript side that camera was closed
