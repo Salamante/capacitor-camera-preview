@@ -73,20 +73,56 @@ class CameraOverlayView: UIView {
     }
     
     func updateBorderColor(_ color: UIColor) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateBorderColor(color)
+            }
+            return
+        }
+        
         self.borderColor = color
-        borderLayer?.strokeColor = color.cgColor
+        self.borderLayer?.strokeColor = color.cgColor
     }
     
     func updateLabelText(_ text: String) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateLabelText(text)
+            }
+            return
+        }
+        
         self.labelText = text
-        instructionLabel?.text = text
+        self.instructionLabel?.text = text
     }
     
     // MARK: - Private Methods
     private func updateOverlay() {
-        // Remove existing sublayers and subviews
-        layer.sublayers?.removeAll()
-        subviews.forEach { $0.removeFromSuperview() }
+        // Ensure this runs on main thread
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateOverlay()
+            }
+            return
+        }
+        
+        // Stop any existing animations first
+        layer.removeAllAnimations()
+        borderLayer?.removeAllAnimations()
+        
+        // Remove existing sublayers and subviews safely
+        layer.sublayers?.forEach { layer in
+            layer.removeAllAnimations()
+            layer.removeFromSuperlayer()
+        }
+        subviews.forEach { view in
+            view.removeFromSuperview()
+        }
+        
+        // Reset references
+        borderLayer = nil
+        instructionLabel = nil
+        closeButton = nil
         
         // Create the overlay with cutout
         createOverlayWithCutout()
@@ -242,24 +278,83 @@ class CameraOverlayView: UIView {
     }
     
     @objc private func closeButtonTapped() {
+        // Ensure we're on main thread
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.closeButtonTapped()
+            }
+            return
+        }
+        
+        // Call the closure safely
         onClosePressed?()
+    }
+    
+    // MARK: - Cleanup
+    deinit {
+        print("CameraOverlayView deinitializing - cleaning up resources")
+        
+        // Clean up animations and remove observers
+        layer.removeAllAnimations()
+        borderLayer?.removeAllAnimations()
+        
+        // Remove all sublayers
+        layer.sublayers?.forEach { layer in
+            layer.removeAllAnimations()
+            layer.removeFromSuperlayer()
+        }
+        
+        // Clear callback to prevent retain cycles
+        onClosePressed = nil
+        
+        // Remove all subviews
+        subviews.forEach { $0.removeFromSuperview() }
+        
+        // Clear references
+        borderLayer = nil
+        instructionLabel = nil
+        closeButton = nil
     }
     
     // MARK: - Animation Methods
     func animateBorderColor(to color: UIColor, duration: TimeInterval = 0.3) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.animateBorderColor(to: color, duration: duration)
+            }
+            return
+        }
+        
+        guard let borderLayer = self.borderLayer else { return }
+        
+        // Remove existing animation first
+        borderLayer.removeAnimation(forKey: "borderColorAnimation")
+        
         let colorAnimation = CABasicAnimation(keyPath: "strokeColor")
-        colorAnimation.fromValue = borderLayer?.strokeColor
+        colorAnimation.fromValue = borderLayer.strokeColor
         colorAnimation.toValue = color.cgColor
         colorAnimation.duration = duration
         colorAnimation.fillMode = .forwards
         colorAnimation.isRemovedOnCompletion = false
         
-        borderLayer?.add(colorAnimation, forKey: "borderColorAnimation")
-        borderLayer?.strokeColor = color.cgColor
+        borderLayer.add(colorAnimation, forKey: "borderColorAnimation")
+        borderLayer.strokeColor = color.cgColor
         self.borderColor = color
     }
     
     func pulseAnimation() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.pulseAnimation()
+            }
+            return
+        }
+        
+        guard let borderLayer = self.borderLayer else { return }
+        
+        // Remove existing pulse animation first
+        borderLayer.removeAnimation(forKey: "pulseAnimation")
+        
         let pulseAnimation = CABasicAnimation(keyPath: "transform.scale")
         pulseAnimation.fromValue = 1.0
         pulseAnimation.toValue = 1.05
@@ -267,11 +362,18 @@ class CameraOverlayView: UIView {
         pulseAnimation.autoreverses = true
         pulseAnimation.repeatCount = .infinity
         
-        borderLayer?.add(pulseAnimation, forKey: "pulseAnimation")
+        borderLayer.add(pulseAnimation, forKey: "pulseAnimation")
     }
     
     func stopPulseAnimation() {
-        borderLayer?.removeAnimation(forKey: "pulseAnimation")
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.stopPulseAnimation()
+            }
+            return
+        }
+        
+        self.borderLayer?.removeAnimation(forKey: "pulseAnimation")
     }
     
     // MARK: - Helper Methods
