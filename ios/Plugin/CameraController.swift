@@ -374,7 +374,7 @@ extension CameraController {
             }
         }
 
-        recognizeTextRequest.recognitionLevel = .accurate
+        recognizeTextRequest.recognitionLevel = .fast // Use fast instead of accurate for better performance
 		recognizeTextRequest.usesLanguageCorrection = false
 
         self.requests = [recognizeTextRequest]
@@ -914,9 +914,9 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             return 
         }
         
-        // Rate limiting - only process every 1 second to prevent crashes
+        // Rate limiting - process every 1 second for optimal balance of performance and responsiveness
         let now = Date()
-        guard now.timeIntervalSince(lastVisionProcessTime) >= 1.0 else {
+        guard now.timeIntervalSince(lastVisionProcessTime) >= 1 else {
             return
         }
         lastVisionProcessTime = now
@@ -924,7 +924,14 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         // Ensure we have requests to process
         guard !requests.isEmpty else { return }
         
-        // Process on background queue to avoid blocking main thread
+        // Additional CPU optimization - skip if system is under heavy load
+        let systemInfo = ProcessInfo.processInfo
+        if systemInfo.thermalState == .critical || systemInfo.thermalState == .serious {
+            print("⚠️ Skipping Vision processing - high thermal state")
+            return
+        }
+        
+        // Process on background queue with balanced priority for good responsiveness
         DispatchQueue.global(qos: .background).async { [weak self] in
             self?.processSampleBufferSafely(sampleBuffer)
         }
