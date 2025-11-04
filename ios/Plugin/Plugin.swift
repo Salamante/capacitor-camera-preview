@@ -154,10 +154,11 @@ public class CameraPreview: CAPPlugin{
     @objc func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             if self.cameraController.captureSession?.isRunning ?? false {
+				self.cameraController.stopVisionRecognition()
                 self.cameraController.captureSession?.stopRunning()
                 self.previewView.removeFromSuperview()
                 self.webView?.isOpaque = true
-                
+
                 // Clean up overlay
                 self.overlayView?.removeFromSuperview()
                 self.overlayView = nil
