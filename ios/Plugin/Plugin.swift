@@ -153,11 +153,13 @@ public class CameraPreview: CAPPlugin{
             self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
             
             // MARK: - Setup overlay if enabled
-            // TEST: Re-enable overlay only (Vision still disabled)
             if self.showOverlay {
                 self.setupOverlay()
             }
-            print("Overlay re-enabled for testing (Vision still disabled)")
+            
+            // Update debug message to reflect current Vision state
+            let visionStatus = self.cameraController.isRunningTextRecognition ? "enabled" : "disabled"
+            print("Camera started with overlay and Vision \(visionStatus)")
 
             if self.rotateWhenOrientationChanged == true {
                 NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
@@ -173,6 +175,8 @@ public class CameraPreview: CAPPlugin{
             // Stop Vision processing temporarily while switching cameras
             let wasRunningVision = self.cameraController.isRunningTextRecognition
             if wasRunningVision {
+                // prevent new buffers from being delivered while we switch
+                self.cameraController.disableDataOutputDelegate()
                 self.cameraController.stopVision()
             }
             
@@ -180,6 +184,8 @@ public class CameraPreview: CAPPlugin{
             
             // Restart Vision if it was running before
             if wasRunningVision {
+                // re-enable sample buffer delegate before resuming vision
+                self.cameraController.enableDataOutputDelegate()
                 try self.cameraController.setupVision()
             }
             
@@ -190,41 +196,49 @@ public class CameraPreview: CAPPlugin{
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { 
-                call.reject("Plugin instance deallocated")
-                return 
-            }
-            
-            if self.cameraController.captureSession?.isRunning ?? false {
-                // Remove observers
-                NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
-                
-                // Stop camera session immediately on main thread
-                if let session = self.cameraController.captureSession, session.isRunning {
-                    session.stopRunning()
-                }
-                
-                // Clean up overlay
-                if let overlay = self.overlayView {
-                    overlay.removeFromSuperview()
-                    self.overlayView = nil
-                }
-                
-                // Clean up preview view
-                if let preview = self.previewView {
-                    preview.removeFromSuperview()
-                    self.previewView = nil
-                }
-                
-                self.webView?.isOpaque = true
-                
-                call.resolve()
-            } else {
-                call.reject("camera already stopped")
+    // Stop Vision processing first and disable data callbacks to avoid in-flight buffers
+    cameraController.disableDataOutputDelegate()
+    cameraController.stopVision()
+        
+        guard self.cameraController.captureSession?.isRunning ?? false else {
+            call.resolve()
+            return
+        }
+        
+        // Remove observers
+        NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
+        
+        // Stop camera session immediately (use camera controller to handle threading)
+        self.cameraController.stopCaptureSession()
+        
+        // Clean up UI on main thread if needed
+        if Thread.isMainThread {
+            self.cleanupUI()
+        } else {
+            DispatchQueue.main.sync {
+                self.cleanupUI()
             }
         }
+        
+        call.resolve()
     }
+    
+    private func cleanupUI() {
+        // Clean up overlay
+        if let overlay = self.overlayView {
+            overlay.removeFromSuperview()
+            self.overlayView = nil
+        }
+        
+        // Clean up preview view
+        if let preview = self.previewView {
+            preview.removeFromSuperview()
+            self.previewView = nil
+        }
+        
+        self.webView?.isOpaque = true
+    }
+    
     // Get user's cache directory path
     @objc func getTempFilePath() -> URL {
         let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -556,28 +570,45 @@ public class CameraPreview: CAPPlugin{
     
     // MARK: - Close Handler
     private func handleOverlayClose() {
-        DispatchQueue.main.async {
-            // Stop camera session immediately (same as stop method)
-            if let session = self.cameraController.captureSession, session.isRunning {
-                session.stopRunning()
-            }
-            
-            // Clean up UI elements
+        // Stop Vision processing first to prevent crashes
+        cameraController.disableDataOutputDelegate()
+        cameraController.stopVision()
+        
+        // Stop camera session immediately (use camera controller to handle threading)
+        self.cameraController.stopCaptureSession()
+        
+        // Clean up UI elements on main thread if needed
+        if Thread.isMainThread {
             self.previewView?.removeFromSuperview()
             self.overlayView?.removeFromSuperview()
             self.overlayView = nil
             self.webView?.isOpaque = true
-            
-            // Notify JavaScript side that camera was closed
-            self.notifyListeners("cameraClosedByUser", data: [:])
+        } else {
+            DispatchQueue.main.sync {
+                self.previewView?.removeFromSuperview()
+                self.overlayView?.removeFromSuperview()
+                self.overlayView = nil
+                self.webView?.isOpaque = true
+            }
         }
+        
+        // Notify JavaScript side that camera was closed
+        self.notifyListeners("cameraClosedByUser", data: [:])
     }
 
 }
 extension CameraPreview: CameraTextRecognitionDelegate {
     func didRecognizeText(blocks: [[String: Any]]) {
-        // print("Text detected: \(blocks)")
-        // Send the recognized text to the JavaScript side
-        self.notifyListeners("textRecognized", data: ["value": blocks])
+        // Ensure notifyListeners is called on main thread for safety
+        if Thread.isMainThread {
+            self.notifyListeners("textRecognized", data: ["value": blocks])
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.notifyListeners("textRecognized", data: ["value": blocks])
+            }
+        }
+        
+        // Debug logging on background thread is fine
+        print("Text recognition delegate called with \(blocks.count) blocks")
     }
 }
