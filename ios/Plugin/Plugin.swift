@@ -35,26 +35,6 @@ public class CameraPreview: CAPPlugin{
     var overlayBackgroundColor: String = "#00000080"
     var overlayLabelText: String = ""
 
-    deinit {
-        print("CameraPreview plugin deinitializing - cleaning up resources")
-        
-        // Capture references for cleanup
-        let cameraController = self.cameraController
-        let overlayView = self.overlayView
-        
-        // Remove observers immediately
-        NotificationCenter.default.removeObserver(self)
-        
-        // Ensure cleanup happens on main thread
-        DispatchQueue.main.async {
-            // Clean up overlay
-            overlayView?.removeFromSuperview()
-            
-            // Clean up camera controller
-            cameraController.cleanup()
-        }
-    }
-
 
     @objc func rotated() {
         let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
@@ -125,120 +105,69 @@ public class CameraPreview: CAPPlugin{
                 if self.cameraController.captureSession?.isRunning ?? false {
                     call.reject("camera already started")
                 } else {
-                    self.startCameraSession(call)
+                    self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) { error in
+                        if let error = error {
+                            print("Error at 88: \(error)")
+                            call.reject(error.localizedDescription)
+                            return
+                        }
+                        let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
+                        self.previewView = UIView(frame: CGRect(x: self.x ?? 0, y: self.y ?? 0, width: self.width!, height: height))
+                        self.webView?.isOpaque = false
+                        self.webView?.backgroundColor = UIColor.clear
+                        self.webView?.scrollView.backgroundColor = UIColor.clear
+                        self.webView?.superview?.addSubview(self.previewView)
+                        if self.toBack! {
+                            self.webView?.superview?.bringSubviewToFront(self.webView!)
+                        }
+                        try? self.cameraController.displayPreview(on: self.previewView)
+
+                        let frontView = self.toBack! ? self.webView : self.previewView
+                        self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
+                        
+                        // MARK: - Setup overlay if enabled
+                        if self.showOverlay {
+                            self.setupOverlay()
+                        }
+
+                        if self.rotateWhenOrientationChanged == true {
+                            NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
+                        }
+
+						call.resolve()
+                    }
                 }
             }
         })
-    }
-    
-    private func startCameraSession(_ call: CAPPluginCall) {
-        self.cameraController.prepare(cameraPosition: self.cameraPosition, disableAudio: self.disableAudio) { error in
-            if let error = error {
-                print("Error at 88: \(error)")
-                call.reject(error.localizedDescription)
-                return
-            }
-            let height = self.paddingBottom != nil ? self.height! - self.paddingBottom!: self.height!
-            self.previewView = UIView(frame: CGRect(x: self.x ?? 0, y: self.y ?? 0, width: self.width!, height: height))
-            self.webView?.isOpaque = false
-            self.webView?.backgroundColor = UIColor.clear
-            self.webView?.scrollView.backgroundColor = UIColor.clear
-            self.webView?.superview?.addSubview(self.previewView)
-            if self.toBack! {
-                self.webView?.superview?.bringSubviewToFront(self.webView!)
-            }
-            try? self.cameraController.displayPreview(on: self.previewView)
-
-            let frontView = self.toBack! ? self.webView : self.previewView
-            self.cameraController.setupGestures(target: frontView ?? self.previewView, enableZoom: self.enableZoom!)
-            
-            // MARK: - Setup overlay if enabled
-            if self.showOverlay {
-                self.setupOverlay()
-            }
-            
-            // Update debug message to reflect current Vision state
-            let visionStatus = self.cameraController.isRunningTextRecognition ? "enabled" : "disabled"
-            print("Camera started with overlay and Vision \(visionStatus)")
-
-            if self.rotateWhenOrientationChanged == true {
-                NotificationCenter.default.addObserver(self, selector: #selector(CameraPreview.rotated), name: UIDevice.orientationDidChangeNotification, object: nil)
-            }
-
-            call.resolve()
-        }
     }
 
 
     @objc func flip(_ call: CAPPluginCall) {
         do {
-            // Stop Vision processing temporarily while switching cameras
-            let wasRunningVision = self.cameraController.isRunningTextRecognition
-            if wasRunningVision {
-                // prevent new buffers from being delivered while we switch
-                self.cameraController.disableDataOutputDelegate()
-                self.cameraController.stopVision()
-            }
-            
             try self.cameraController.switchCameras()
-            
-            // Restart Vision if it was running before
-            if wasRunningVision {
-                // re-enable sample buffer delegate before resuming vision
-                self.cameraController.enableDataOutputDelegate()
-                try self.cameraController.setupVision()
-            }
-            
             call.resolve()
         } catch {
-            call.reject("failed to flip camera: \(error.localizedDescription)")
+            call.reject("failed to flip camera")
         }
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-    // Stop Vision processing first and disable data callbacks to avoid in-flight buffers
-    cameraController.disableDataOutputDelegate()
-    cameraController.stopVision()
-        
-        guard self.cameraController.captureSession?.isRunning ?? false else {
-            call.resolve()
-            return
-        }
-        
-        // Remove observers
-        NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
-        
-        // Stop camera session immediately (use camera controller to handle threading)
-        self.cameraController.stopCaptureSession()
-        
-        // Clean up UI on main thread if needed
-        if Thread.isMainThread {
-            self.cleanupUI()
-        } else {
-            DispatchQueue.main.sync {
-                self.cleanupUI()
+        DispatchQueue.main.async {
+            if self.cameraController.captureSession?.isRunning ?? false {
+                self.cameraController.captureSession?.stopRunning()
+                self.previewView.removeFromSuperview()
+                self.webView?.isOpaque = true
+                
+                // Clean up overlay
+                self.overlayView?.removeFromSuperview()
+                self.overlayView = nil
+                
+                call.resolve()
+            } else {
+                call.reject("camera already stopped")
             }
         }
-        
-        call.resolve()
     }
-    
-    private func cleanupUI() {
-        // Clean up overlay
-        if let overlay = self.overlayView {
-            overlay.removeFromSuperview()
-            self.overlayView = nil
-        }
-        
-        // Clean up preview view
-        if let preview = self.previewView {
-            preview.removeFromSuperview()
-            self.previewView = nil
-        }
-        
-        self.webView?.isOpaque = true
-    }
-    
     // Get user's cache directory path
     @objc func getTempFilePath() -> URL {
         let path = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -570,45 +499,34 @@ public class CameraPreview: CAPPlugin{
     
     // MARK: - Close Handler
     private func handleOverlayClose() {
-        // Stop Vision processing first to prevent crashes
-        cameraController.disableDataOutputDelegate()
-        cameraController.stopVision()
-        
-        // Stop camera session immediately (use camera controller to handle threading)
-        self.cameraController.stopCaptureSession()
-        
-        // Clean up UI elements on main thread if needed
-        if Thread.isMainThread {
-            self.previewView?.removeFromSuperview()
-            self.overlayView?.removeFromSuperview()
-            self.overlayView = nil
-            self.webView?.isOpaque = true
-        } else {
-            DispatchQueue.main.sync {
-                self.previewView?.removeFromSuperview()
+        DispatchQueue.main.async {
+            // Ensure the camera is actually running before proceeding
+	        if self.cameraController.captureSession?.isRunning ?? false {
+	            
+	            // 🚨 Step 1: STOP the background processing first.
+	            // This is the CRITICAL STEP to prevent the race condition.
+	            self.cameraController.stopVisionRecognition() // <-- Call your new stop method
+
+	            // 🚨 Step 2: Now safely stop the session and clean up.
+	            self.cameraController.captureSession?.stopRunning()
+                self.previewView.removeFromSuperview()
+                self.webView?.isOpaque = true
+                
+                // Clean up overlay
                 self.overlayView?.removeFromSuperview()
                 self.overlayView = nil
-                self.webView?.isOpaque = true
+                
+                // Notify JavaScript side that camera was closed
+                self.notifyListeners("cameraClosedByUser", data: [:])
             }
         }
-        
-        // Notify JavaScript side that camera was closed
-        self.notifyListeners("cameraClosedByUser", data: [:])
     }
 
 }
 extension CameraPreview: CameraTextRecognitionDelegate {
     func didRecognizeText(blocks: [[String: Any]]) {
-        // Ensure notifyListeners is called on main thread for safety
-        if Thread.isMainThread {
-            self.notifyListeners("textRecognized", data: ["value": blocks])
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.notifyListeners("textRecognized", data: ["value": blocks])
-            }
-        }
-        
-        // Debug logging on background thread is fine
-        print("Text recognition delegate called with \(blocks.count) blocks")
+        // print("Text detected: \(blocks)")
+        // Send the recognized text to the JavaScript side
+        self.notifyListeners("textRecognized", data: ["value": blocks])
     }
 }

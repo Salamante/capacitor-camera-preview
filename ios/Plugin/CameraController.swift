@@ -10,7 +10,6 @@ import AVFoundation
 import UIKit
 import Vision
 import ImageIO
-import AudioToolbox
 
 protocol CameraTextRecognitionDelegate: AnyObject {
     func didRecognizeText(blocks: [[String: Any]])
@@ -35,12 +34,6 @@ class CameraController: NSObject {
     var photoCaptureCompletionBlock: ((UIImage?, Error?) -> Void)?
 
     var sampleBufferCaptureCompletionBlock: ((UIImage?, Error?) -> Void)?
-    
-    // Store completion for silent capture
-    var silentCaptureCompletion: ((UIImage?, Error?) -> Void)?
-    
-    // Rate limiting for sample buffer processing
-    var lastVisionProcessTime: Date = Date.distantPast
 
     var highResolutionOutput: Bool = false
 
@@ -49,134 +42,15 @@ class CameraController: NSObject {
 
     var zoomFactor: CGFloat = 1.0
     
-    // Thread safety
-    private let cameraQueue = DispatchQueue(label: "com.camera.queue", qos: .userInitiated)
-    internal var isCleaningUp = false
-    internal var isDestroyed = false
-    private var safetyTimer: Timer?
-    
-    internal var requests = [VNRequest]()
-    var isRunningTextRecognition = false
+    private var requests = [VNRequest]()
+	private let visionQueue = DispatchQueue(label: "com.app.visionProcessingQueue", qos: .userInitiated)
+    private var isRunningTextRecognition = false
 	private var frameCounter = 0
-    public weak var textRecognitionDelegate: CameraTextRecognitionDelegate?
-    
-    // Timer-based Vision processing (safer than sample buffer delegates)
-    private var visionTimer: Timer?
-    
-    // Keep a reference to the data output queue so we can enable/disable the delegate safely
-    private var dataOutputQueue: DispatchQueue?
-    
-    // Group to track in-flight Vision processing tasks so we can wait for them when stopping
-    private var visionProcessingGroup = DispatchGroup()
-    
-    // MARK: - Cleanup Methods
-    func stopVision() {
-        cameraQueue.sync {
-            guard !isDestroyed else { return }
-            isRunningTextRecognition = false
-            requests.removeAll()
-            frameCounter = 0
-            print("Vision processing stopped and cleaned up")
-        }
-        
-        // Stop the timer instead of waiting for sample buffer group
-        stopVisionTimer()
-    }
-
-    /// Stop the capture session safely on the camera queue.
-    func stopCaptureSession() {
-        cameraQueue.sync {
-            if let session = self.captureSession, session.isRunning {
-                session.stopRunning()
-            }
-        }
-    }
-
-    /// Disable the sample buffer delegate to prevent `captureOutput(_:didOutput:from:)` from being called.
-    /// This helps avoid buffers being processed while the capture session is stopping which can lead to crashes.
-    func disableDataOutputDelegate() {
-        // Sample buffer delegate already disabled - using timer-based approach instead
-        print("Sample buffer delegate already disabled")
-    }
-
-    /// Re-enable the sample buffer delegate using the stored data output queue.
-    func enableDataOutputDelegate() {
-        // Sample buffer delegate disabled - using timer-based approach instead
-        print("Sample buffer delegate disabled - using timer-based Vision")
-    }
-    
-    func cleanup() {
-        cameraQueue.sync {
-            guard !isDestroyed else { return }
-            isCleaningUp = true
-            isDestroyed = true
-            
-            // Stop Vision timer first
-            DispatchQueue.main.async { [weak self] in
-                self?.stopVisionTimer()
-            }
-            
-            // Stop safety timer
-            safetyTimer?.invalidate()
-            safetyTimer = nil
-            
-            // Stop all processing immediately
-            isRunningTextRecognition = false
-            requests.removeAll()
-            frameCounter = 0
-            
-            // CRITICAL: Remove sample buffer delegate to prevent crashes
-            dataOutput?.setSampleBufferDelegate(nil, queue: nil)
-            
-            // Clear delegate to prevent callbacks
-            textRecognitionDelegate = nil
-            
-            // Stop capture session on background thread
-            if let session = captureSession, session.isRunning {
-                session.stopRunning()
-            }
-            
-            // Clear all capture session inputs and outputs
-            captureSession?.inputs.forEach { input in
-                captureSession?.removeInput(input)
-            }
-            captureSession?.outputs.forEach { output in
-                captureSession?.removeOutput(output)
-            }
-            
-            captureSession = nil
-            frontCameraInput = nil
-            rearCameraInput = nil
-            photoOutput = nil
-            dataOutput = nil
-            
-            DispatchQueue.main.async {
-                self.previewLayer?.removeFromSuperlayer()
-                self.previewLayer = nil
-            }
-            
-            print("CameraController cleanup completed")
-        }
-    }
-    
-    deinit {
-        print("CameraController deinitializing")
-        cleanup()
-    }
+    public var textRecognitionDelegate: CameraTextRecognitionDelegate?
 }
 
 extension CameraController {
     func prepare(cameraPosition: String, disableAudio: Bool, completionHandler: @escaping (Error?) -> Void) {
-        // Safety check
-        guard !isCleaningUp && !isDestroyed else {
-            completionHandler(CameraControllerError.invalidOperation)
-            return
-        }
-        
-        // Preserve Vision state instead of stopping it during camera setup
-        let wasRunningVision = isRunningTextRecognition
-        print("Camera prepare - preserving Vision state: \(wasRunningVision)")
-        
         func createCaptureSession() {
             self.captureSession = AVCaptureSession()
         }
@@ -251,28 +125,21 @@ extension CameraController {
         }
 
         func configureDataOutput() throws {
-            // Re-enable data output WITH sample buffer delegate for silent Vision processing
             guard let captureSession = self.captureSession else { throw CameraControllerError.captureSessionIsMissing }
 
             self.dataOutput = AVCaptureVideoDataOutput()
             self.dataOutput?.videoSettings = [
                 (kCVPixelBufferPixelFormatTypeKey as String): NSNumber(value: kCVPixelFormatType_32BGRA as UInt32)
             ]
-            
-            // Critical: Always discard late frames to prevent memory buildup
             self.dataOutput?.alwaysDiscardsLateVideoFrames = true
-            
             if captureSession.canAddOutput(self.dataOutput!) {
                 captureSession.addOutput(self.dataOutput!)
             }
 
-            // Set up sample buffer delegate on background queue with proper safety
-            let videoQueue = DispatchQueue(label: "videoQueue", qos: .background)
-            self.dataOutput?.setSampleBufferDelegate(self, queue: videoQueue)
-
             captureSession.commitConfiguration()
 
-            print("Data output configured with SAFE sample buffer delegate")
+            let queue = DispatchQueue(label: "DataOutput", attributes: [])
+            self.dataOutput?.setSampleBufferDelegate(self, queue: queue)
         }
 
         DispatchQueue(label: "prepare").async {
@@ -292,15 +159,6 @@ extension CameraController {
             }
 
             DispatchQueue.main.async {
-                // Restore Vision processing if it was running before camera setup
-                if wasRunningVision {
-                    print("Restoring Vision processing after camera setup")
-                    do {
-                        try self.setupVision()
-                    } catch {
-                        print("Failed to restore Vision: \(error)")
-                    }
-                }
                 completionHandler(nil)
             }
         }
@@ -320,17 +178,18 @@ extension CameraController {
     }
     
     func setupVision() throws {
-        print("Setting up SAFE sample buffer delegate Vision processing for text recognition")
-        
-        let recognizeTextRequest = VNRecognizeTextRequest { [weak self] (request, error) in
-            guard let self = self else { return }
-            
-            guard let observations = request.results as? [VNRecognizedTextObservation] else {
-				print("No observations")
-                return
-            }
+	       let recognizeTextRequest = VNRecognizeTextRequest { [weak self] (request, error) in
+	        guard let self = self else { // Safely unwrap to ensure self is still alive
+	            print("CameraController was deallocated before vision recognition completed.")
+	            return
+	        }
 
-            // Create an array to hold the structured recognition data
+			guard let observations = request.results as? [VNRecognizedTextObservation] else {
+	            print("No observations")
+	            return
+	        }
+
+            // 1. Create an array to hold the structured recognition data
 		    var recognizedTextBlocks: [[String: Any]] = []
 
 		    for observation in observations {
@@ -339,156 +198,59 @@ extension CameraController {
 
 		        // The bounding box is normalized (0.0 to 1.0, with origin at bottom-left)
 		        let normalizedBoundingBox = observation.boundingBox
+
+		        // 2. Format the bounding box for easier use in JS/JSON
+		        // You'll want the (x, y, width, height) of the normalized CGRect
 		        let box = normalizedBoundingBox
 		        
-		        // Create a dictionary for the current text block
+		        // 3. Create a dictionary for the current text block
 		        let block: [String: Any] = [
 		            "text": topCandidate.string,
-		            "confidence": topCandidate.confidence,
+		            "confidence": topCandidate.confidence, // Float (0.0 to 1.0)
+		            // Storing the normalized (x, y, w, h) values
 		            "boundingBox": [
 		                "x": box.origin.x,
 		                "y": box.origin.y,
 		                "width": box.size.width,
 		                "height": box.size.height
 		            ]
+		            // If you prefer a comma-separated string format:
+		            // "boundingBoxString": "\(box.origin.x),\(box.origin.y),\(box.size.width),\(box.size.height)"
 		        ]
 
+		        // 4. Append the block to the results array
 		        recognizedTextBlocks.append(block)
 		    }
 		            
-            // Process Vision results safely on background thread
-            if !self.isDestroyed && !self.isCleaningUp && self.isRunningTextRecognition {
-                print("Vision recognized \(recognizedTextBlocks.count) text blocks")
-                
-                // Call delegate on background thread to avoid UI lag
-                if let delegate = self.textRecognitionDelegate {
-                    delegate.didRecognizeText(blocks: recognizedTextBlocks)
-                }
-                
-                // Also log for debugging
-                if !recognizedTextBlocks.isEmpty {
-                    let textStrings = recognizedTextBlocks.compactMap { $0["text"] as? String }
-                    let recognizedText = textStrings.joined(separator: " ")
-                    print("Recognized text: \(recognizedText)")
-                }
+            // Pass the recognized text to the delegate on the main thread
+            DispatchQueue.main.async {
+                self.textRecognitionDelegate?.didRecognizeText(blocks: recognizedTextBlocks)
             }
         }
 
-        recognizeTextRequest.recognitionLevel = .fast // Use fast instead of accurate for better performance
+        recognizeTextRequest.recognitionLevel = .accurate
 		recognizeTextRequest.usesLanguageCorrection = false
 
         self.requests = [recognizeTextRequest]
 
 		print("Vision setup complete")
 		self.isRunningTextRecognition = true
-        
-        // Start timer-based processing instead of sample buffer delegate
-        startVisionTimer()
     }
-    
-    private func startVisionTimer() {
-        // Stop any existing timer
-        visionTimer?.invalidate()
-        
-                // Use SAFE sample buffer delegate approach instead of timer
-        isRunningTextRecognition = true
-        
-        // DISABLE timer-based approach - using sample buffer delegate for silent processing
-        /*
-        // Stop any existing timer
-        visionTimer?.invalidate()
-        
-        // Start a timer that captures frames every 2 seconds for Vision processing (less frequent, silent)
-        visionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.processVisionFrame()
+
+	func stopVisionRecognition() {
+	    // 1. Stop processing in the captureOutput delegate method
+	    self.isRunningTextRecognition = false 
+	    
+	    // 2. If you added a delegate queue in setup (which is recommended for captureOutput):
+	    if let output = self.dataOutput {
+            // Passing nil for the delegate and queue safely detaches the delegate.
+            output.setSampleBufferDelegate(nil, queue: nil) 
+            print("AVCaptureVideoDataOutput delegate removed and queue cleared.")
         }
-        
-        print("Started silent Vision processing (every 2 seconds)")
-        */
-        
-        print("Started SAFE sample buffer delegate Vision processing")
-    }
-    
-    private func stopVisionTimer() {
-        visionTimer?.invalidate()
-        visionTimer = nil
-        print("Stopped Vision timer")
-    }
-    
-    private func processVisionFrame() {
-        print("🔍 processVisionFrame called")
-        
-        guard !isDestroyed && !isCleaningUp && isRunningTextRecognition else { 
-            print("❌ Early exit - destroyed: \(isDestroyed), cleaning: \(isCleaningUp), running: \(isRunningTextRecognition)")
-            return 
-        }
-        
-        guard let captureSession = self.captureSession, captureSession.isRunning else { 
-            print("❌ No capture session or not running")
-            return 
-        }
-        
-        print("✅ Capture session is running, attempting to capture sample...")
-        
-        // Use silent photo capture for Vision processing
-        self.captureSilentSample { [weak self] image, error in
-            guard let self = self else { return }
-            
-            if let error = error {
-                print("❌ Error capturing sample for Vision: \(error)")
-                return
-            }
-            
-            guard let image = image else {
-                print("❌ No image captured for Vision")
-                return
-            }
-            
-            print("✅ Got image for Vision processing, size: \(image.size)")
-            
-            // Process the captured image with Vision on background queue
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self,
-                      !self.isDestroyed,
-                      !self.isCleaningUp,
-                      self.isRunningTextRecognition,
-                      !self.requests.isEmpty else { 
-                    print("❌ Vision processing cancelled - state changed")
-                    return 
-                }
-                
-                guard let cgImage = image.cgImage else {
-                    print("❌ Could not get CGImage from captured image")
-                    return
-                }
-                
-                print("🔍 Starting Vision request on \(image.size) image...")
-                let imageRequestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-                
-                do {
-                    try imageRequestHandler.perform(self.requests)
-                    print("✅ Vision request completed successfully")
-                } catch {
-                    print("❌ Vision error: \(error)")
-                }
-            }
-        }
-    }
-    
-    private func startSafetyTimer() {
-        // TEMPORARILY DISABLED
-        return
-        
-        /*
-        DispatchQueue.main.async { [weak self] in
-            self?.safetyTimer?.invalidate()
-            self?.safetyTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
-                print("Safety timer triggered - performing cleanup")
-                self?.cleanup()
-            }
-        }
-        */
-    }
+	    
+	    // 3. Clear the VNRequests if necessary, though stopping the flow is usually enough
+	    self.requests = [] 
+	}
 
     func setupGestures(target: UIView, enableZoom: Bool) {
         setupTapGesture(target: target, selector: #selector(handleTap(_:)), delegate: self)
@@ -602,47 +364,6 @@ extension CameraController {
         }
 
         self.sampleBufferCaptureCompletionBlock = completion
-    }
-    
-    // New silent capture method for Vision processing
-    func captureSilentSample(completion: @escaping (UIImage?, Error?) -> Void) {
-        print("🎯 captureSilentSample called")
-        
-        guard let captureSession = captureSession,
-              captureSession.isRunning else {
-            print("❌ Capture session not running for silent sample")
-            completion(nil, CameraControllerError.captureSessionIsMissing)
-            return
-        }
-        
-        guard let photoOutput = self.photoOutput else {
-            print("❌ Photo output not available for silent sample")
-            completion(nil, CameraControllerError.unknown)
-            return
-        }
-        
-        print("✅ Creating silent photo settings...")
-        
-        // Create settings for silent capture
-        let photoSettings = AVCapturePhotoSettings()
-        
-        // Disable flash for silent capture
-        photoSettings.flashMode = .off
-        
-        // Store completion for delegate callback
-        self.silentCaptureCompletion = completion
-        
-        print("✅ Capturing silent photo...")
-        
-        // Temporarily disable camera shutter sound by muting system volume
-        // This is a standard technique for silent photo capture
-        DispatchQueue.main.async {
-            // Disable the shutter sound by removing the system sound
-            AudioServicesDisposeSystemSoundID(1108)
-            
-            // Capture the photo
-            photoOutput.capturePhoto(with: photoSettings, delegate: self)
-        }
     }
 
 
@@ -870,92 +591,83 @@ extension CameraController: UIGestureRecognizerDelegate {
 extension CameraController: AVCapturePhotoCaptureDelegate {
     public func photoOutput(_ captureOutput: AVCapturePhotoOutput, didFinishProcessingPhoto photoSampleBuffer: CMSampleBuffer?, previewPhoto previewPhotoSampleBuffer: CMSampleBuffer?,
                             resolvedSettings: AVCaptureResolvedPhotoSettings, bracketSettings: AVCaptureBracketedStillImageSettings?, error: Swift.Error?) {
-        
-        if let error = error { 
-            // Handle both regular photo capture and silent capture errors
-            self.photoCaptureCompletionBlock?(nil, error)
-            self.silentCaptureCompletion?(nil, error)
-            self.silentCaptureCompletion = nil
-        } else if let buffer = photoSampleBuffer, let data = AVCapturePhotoOutput.jpegPhotoDataRepresentation(forJPEGSampleBuffer: buffer, previewPhotoSampleBuffer: nil),
-                  let image = UIImage(data: data) {
-            
-            let fixedImage = image.fixedOrientation()
-            
-            // Handle regular photo capture
-            self.photoCaptureCompletionBlock?(fixedImage, nil)
-            
-            // Handle silent capture for Vision processing
-            if let silentCompletion = self.silentCaptureCompletion {
-                if let fixedImage = fixedImage {
-                    print("✅ Silent capture completed successfully, image size: \(fixedImage.size)")
-                    silentCompletion(fixedImage, nil)
-                } else {
-                    print("❌ Failed to fix image orientation for silent capture")
-                    silentCompletion(nil, CameraControllerError.unknown)
-                }
-                self.silentCaptureCompletion = nil
-            }
+        if let error = error { self.photoCaptureCompletionBlock?(nil, error) } else if let buffer = photoSampleBuffer, let data = AVCapturePhotoOutput.jpegPhotoDataRepresentation(forJPEGSampleBuffer: buffer, previewPhotoSampleBuffer: nil),
+                                                                                       let image = UIImage(data: data) {
+            self.photoCaptureCompletionBlock?(image.fixedOrientation(), nil)
         } else {
-            // Handle unknown errors for both
             self.photoCaptureCompletionBlock?(nil, CameraControllerError.unknown)
-            self.silentCaptureCompletion?(nil, CameraControllerError.unknown)
-            self.silentCaptureCompletion = nil
         }
     }
 }
 
-// MARK: - Sample Buffer Processing WITH SAFETY MEASURES
-// Re-enabled with proper threading, rate limiting, and cleanup
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
-    
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // CRITICAL SAFETY CHECKS - exit early if any issues
-        guard !isDestroyed && !isCleaningUp && isRunningTextRecognition else { 
-            return 
-        }
+   func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
         
-        // Rate limiting - process every 1 second for optimal balance of performance and responsiveness
-        let now = Date()
-        guard now.timeIntervalSince(lastVisionProcessTime) >= 1 else {
+        // ---- Snapshot Flow ----
+        if let completion = sampleBufferCaptureCompletionBlock {
+            guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                completion(nil, CameraControllerError.unknown)
+                sampleBufferCaptureCompletionBlock = nil
+                return
+            }
+
+            CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+
+            let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer)
+            let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+            let width = CVPixelBufferGetWidth(imageBuffer)
+            let height = CVPixelBufferGetHeight(imageBuffer)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo: UInt32 = CGBitmapInfo.byteOrder32Little.rawValue |
+                                     CGImageAlphaInfo.premultipliedFirst.rawValue
+
+            let context = CGContext(
+                data: baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            )
+
+            print("Snapshot taken, image height: \(height), width: \(width)")
+
+            guard let cgImage = context?.makeImage() else {
+                completion(nil, CameraControllerError.unknown)
+                sampleBufferCaptureCompletionBlock = nil
+                return
+            }
+
+            let image = UIImage(cgImage: cgImage)
+            completion(image.fixedOrientation(), nil)
+            sampleBufferCaptureCompletionBlock = nil
             return
         }
-        lastVisionProcessTime = now
         
-        // Ensure we have requests to process
-        guard !requests.isEmpty else { return }
-        
-        // Additional CPU optimization - skip if system is under heavy load
-        let systemInfo = ProcessInfo.processInfo
-        if systemInfo.thermalState == .critical || systemInfo.thermalState == .serious {
-            print("⚠️ Skipping Vision processing - high thermal state")
-            return
-        }
-        
-        // Process on background queue with balanced priority for good responsiveness
-        DispatchQueue.global(qos: .background).async { [weak self] in
-            self?.processSampleBufferSafely(sampleBuffer)
-        }
-    }
-    
-    private func processSampleBufferSafely(_ sampleBuffer: CMSampleBuffer) {
-        // Double-check state on background thread
-        guard !isDestroyed && !isCleaningUp && isRunningTextRecognition else { 
-            return 
-        }
-        
-        // Convert sample buffer to image buffer
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { 
-            return 
-        }
-        
-        // Process with Vision
-        let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: imageBuffer, options: [:])
-        
-        do {
-            try imageRequestHandler.perform(self.requests)
-            print("✅ SAFE sample buffer Vision processing completed")
-        } catch {
-            print("❌ Safe Vision processing error: \(error)")
+        // ---- Vision OCR Flow ----
+        if self.isRunningTextRecognition {
+			frameCounter += 1
+        	if frameCounter % 30 != 0 { return } // process every 30th frame
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+            let orientation = visionOrientation(for: connection.videoOrientation, isFrontCamera: false)
+            let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer,
+                                                            orientation: .up,
+                                                            options: [:])
+            
+            // Dispatch the computationally expensive perform operation to the serial visionQueue
+		    visionQueue.async { // <--- Use the dedicated serial queue
+		        do {
+		            // Ensure requests is not nil (if it's an optional)
+		            try imageRequestHandler.perform(self.requests) 
+		        } catch {
+		            print("Vision error:", error)
+		        }
+		    }
         }
     }
 }
